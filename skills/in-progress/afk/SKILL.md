@@ -122,6 +122,6 @@ When the user returns, point them at:
 
 - **Sandbox always.** Never substitute `noSandbox()`. If Docker/Podman is unavailable, stop.
 - **Branch per issue, never head.** Every pipeline runs on its own `agent/issue-<n>` branch; only the serialized host-side merge step touches main.
-- **Merge on double green only.** A branch lands only when the implementer's full suite is green AND an independent fresh-context reviewer approved. Merges are serialized and never forced; a conflicted merge is aborted and routed to a continuation issue, not resolved blind.
+- **Merge on double green only — triple when CI exists.** A branch lands only when the implementer's full suite is green AND an independent fresh-context reviewer approved AND (if the repo has CI) the neutral runner passes the pushed branch. Main's CI is watched after each landing; a red main auto-reverts the merge commit. Merges are serialized and never forced; a conflicted merge is aborted and routed to a continuation issue, not resolved blind.
 - **Bounded loop.** The generated `main.ts` caps total issues per night and never retries a failed issue in the same run. Continuation issues count toward the cap and never chain — a failed continuation goes to `needs-triage`, not to a third session.
 - **Closing is earned.** An issue is closed only after its branch is merged and pushed. Everything else stays open and labeled truthfully.

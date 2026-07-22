@@ -16,7 +16,7 @@ Each issue goes through **implement → independent review → merge → close**
 
 1. **Size, then implement** in a warm sandbox on `agent/issue-<n>`: the ticket's effort tier (label, or dispatcher judgment) picks the implementer's model, and it iterates until the full test suite is green (`<promise>COMPLETE</promise>`).
 2. **Review** in the *same sandbox but a fresh context*: an independent reviewer agent diffs the branch against main, re-runs the suite, and either approves or writes findings to `REVIEW.md`. Change requests loop back to an implementer pass, up to `MAX_REVIEW_ROUNDS`.
-3. **Merge on double green only** — implementer `COMPLETE` *and* reviewer `<verdict>APPROVED</verdict>`. The host merges the branch into main, pushes, and closes the issue. Merges are the only cross-issue mutation, so they are always serialized, even in the parallel template.
+3. **Merge on double green only — triple when the repo has CI.** Implementer `COMPLETE` *and* reviewer `<verdict>APPROVED</verdict>`; if CI exists, the branch is pushed and must go CI-green before merging, and main is watched after the merge — a red main auto-reverts the landing (clean, since each landing is one `--no-ff` merge commit). Merges are the only cross-issue mutation, so they are always serialized, even in the parallel template.
 4. **Failure at any stage** (blocked, non-converging, crash, merge conflict): the issue is relabeled `needs-triage`, and — unless it is already a continuation — a fresh `[continuation]` issue is filed with `ready-for-agent`, pointing at the branch, so a **new session picks the work up** (tonight if budget remains, since the queue is re-queried each round). A continuation that fails again goes back to the human queue instead of spawning a chain.
 
 Shared helpers (include in the generated `main.ts`):
@@ -85,6 +85,27 @@ const agent = (tier: Tier) =>
   claudeCode(MODELS[tier], { effort: tier === "deep" ? "high" : "medium", ...routedEnv });
 
 const sh = (cmd: string) => execSync(cmd, { encoding: "utf8" });
+
+const MAIN_BRANCH = sh(`git branch --show-current`).trim();
+
+// Independent third gate: the repo's own CI on the pushed branch. The
+// sandbox suite can lie (env drift, missing secrets); a neutral runner
+// can't. Repos without CI skip this gate.
+const HAS_CI = (() => {
+  try { return JSON.parse(sh(`gh workflow list --json id`)).length > 0; } catch { return false; }
+})();
+const CI_TIMEOUT_MS = 30 * 60_000;
+
+async function waitForCi(branch: string): Promise<boolean> {
+  const deadline = Date.now() + CI_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 30_000));
+    const runs = JSON.parse(sh(`gh run list --branch ${branch} --limit 1 --json status,conclusion`));
+    if (!runs.length) continue; // CI hasn't registered the push yet
+    if (runs[0].status === "completed") return runs[0].conclusion === "success";
+  }
+  return false; // never finished — fail safe
+}
 
 // Dispatcher: sizes an unlabeled ticket with one cheap light-tier call.
 // All three providers speak the Messages API; both auth headers are sent
@@ -178,13 +199,30 @@ async function implementAndReview(issue: Issue): Promise<boolean> {
 }
 
 // The only cross-issue mutation. Always serialized, never forced.
-function mergeAndClose(issue: Issue): boolean {
+// Landing takes three greens when the repo has CI: agent suite,
+// independent reviewer, and the neutral runner — checked on the branch
+// before merging, and again on main after, with a clean revert if main
+// goes red (every landing is a single --no-ff merge commit).
+async function mergeAndClose(issue: Issue): Promise<boolean> {
   const branch = `agent/issue-${issue.number}`;
   try {
+    if (HAS_CI) {
+      sh(`git push -u origin ${branch}`);
+      if (!(await waitForCi(branch))) {
+        console.error(`[ralph] CI rejected ${branch}; not merging`);
+        return false;
+      }
+    }
     sh(`git merge --no-ff ${branch} -m "land ${branch} (#${issue.number})"`);
     sh(`git push origin HEAD`);
+    if (HAS_CI && !(await waitForCi(MAIN_BRANCH))) {
+      sh(`git revert -m 1 --no-edit HEAD`);
+      sh(`git push origin HEAD`);
+      console.error(`[ralph] #${issue.number} reverted: main CI went red after landing`);
+      return false;
+    }
     sh(
-      `gh issue close ${issue.number} --comment "> *This was done by an AI agent working AFK.* Implemented on \\`${branch}\\`, independently reviewed, full suite green, merged to main."`,
+      `gh issue close ${issue.number} --comment "> *This was done by an AI agent working AFK.* Implemented on \\`${branch}\\`, independently reviewed, full suite green${HAS_CI ? ", CI green" : ""}, merged to main."`,
     );
     console.log(`[ralph] #${issue.number} landed on main`);
     return true;
@@ -231,7 +269,7 @@ while (attempted.size < MAX_ISSUES_PER_NIGHT) {
     console.error(`[ralph] #${issue.number} crashed:`, err);
   }
 
-  if (green && mergeAndClose(issue)) landed++;
+  if (green && (await mergeAndClose(issue))) landed++;
   else handleFailure(issue);
 }
 
@@ -261,13 +299,13 @@ while (attempted.size < MAX_ISSUES_PER_NIGHT) {
     }),
   );
 
-  results.forEach((r, i) => {
+  for (const [i, r] of results.entries()) {
     const issue = wave[i];
     if (r.status === "rejected") console.error(`[ralph] #${issue.number} crashed:`, r.reason);
     const green = r.status === "fulfilled" && r.value;
-    if (green && mergeAndClose(issue)) landed++;
+    if (green && (await mergeAndClose(issue))) landed++;
     else handleFailure(issue);
-  });
+  }
 }
 
 console.log(`[ralph] night shift over: ${landed} landed on main, ${attempted.size} attempted`);
