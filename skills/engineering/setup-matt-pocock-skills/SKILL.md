@@ -56,6 +56,8 @@ If the tracker already has labels that are obvious equivalents (`triage`, `more-
 - `CONTEXT-MAP.md` exists at the root → **multi-context**
 - Otherwise → **single-context** (one `CONTEXT.md` + `docs/adr/` at the repo root)
 
+**Autonomy:** default tier `interactive` — no detection, just write `docs/agents/autonomy.md` from the seed so the three tiers (`interactive` / `assisted` / `autonomous`), the critical-decision test, and the decision-log rules are on hand. Skills that interview or gate on approval (`grilling`, `to-prd`, `to-issues`) read this file; the user flips the default by editing one line.
+
 **File to carry the `## Agent skills` block:**
 
 - `CLAUDE.md` exists → edit it
@@ -94,6 +96,10 @@ Write directly — no draft-and-confirm round-trip.
 ### Domain docs
 
 [one-line summary of layout — "single-context" or "multi-context"]. See `docs/agents/domain.md`.
+
+### Autonomy
+
+[one-line summary — default tier and that skills accept per-invocation overrides]. See `docs/agents/autonomy.md`.
 ```
 
 Then write the three docs files using the seed templates in this skill folder as a starting point:
@@ -103,6 +109,7 @@ Then write the three docs files using the seed templates in this skill folder as
 - [issue-tracker-local.md](./issue-tracker-local.md) — local-markdown issue tracker
 - [triage-labels.md](./triage-labels.md) — label mapping
 - [domain.md](./domain.md) — domain doc consumer rules + layout
+- [autonomy.md](./autonomy.md) — autonomy tiers, critical-decision test, decision-log rules
 
 For "other" issue trackers, write `docs/agents/issue-tracker.md` from scratch using the user's description.
 
@@ -110,7 +117,7 @@ For "other" issue trackers, write `docs/agents/issue-tracker.md` from scratch us
 
 One compact summary — the user's chance to veto after the fact, not a gate before writing:
 
-- The four decisions taken (tracker, PRs-as-surface, label mapping, doc layout) with a one-word reason each ("GitHub — remote", "single-context — no CONTEXT-MAP.md").
+- The decisions taken (tracker, PRs-as-surface, label mapping, doc layout, autonomy tier) with a one-word reason each ("GitHub — remote", "single-context — no CONTEXT-MAP.md", "interactive — default").
 - Which file got the `## Agent skills` block.
 - How to override: edit `docs/agents/*.md` directly (they're plain markdown, safe to hand-edit), or re-run `/setup-matt-pocock-skills interactive` to redo the decisions with questions.
 

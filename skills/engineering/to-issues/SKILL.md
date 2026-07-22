@@ -36,6 +36,8 @@ Break the plan into **tracer bullet** issues. Each issue is a thin vertical slic
 
 ### 4. Quiz the user
 
+This gate follows the autonomy tier (per `docs/agents/autonomy.md` or the user's words). `interactive`: run the full quiz below. `assisted`: present the breakdown, but ask only about slices whose granularity or dependencies you're genuinely unsure of — silence on the rest is approval. `autonomous`: skip the quiz, apply your own granularity judgment, and note the breakdown rationale in the parent issue or reply.
+
 Present the proposed breakdown as a numbered list. For each slice, show:
 
 - **Title**: short descriptive name
