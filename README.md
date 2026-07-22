@@ -33,9 +33,10 @@ npx skills@latest add mattpocock/skills
 2. Pick the skills you want, and which coding agents you want to install them on. **Make sure you select `/setup-matt-pocock-skills`**.
 
 3. Run `/setup-matt-pocock-skills` in your agent. It will:
-   - Ask you which issue tracker you want to use (GitHub, Linear, or local files)
-   - Ask you what labels you apply to tickets when you triage them (`/triage` uses labels)
-   - Ask you where you want to save any docs we create
+   - Detect your issue tracker from the repo (GitHub, GitLab, or local files) and configure it
+   - Set up the triage labels `/triage` uses, mapping to your existing labels where they match
+   - Pick where docs live, then report every choice it made so you can override any of them
+   - Only ask a question when it genuinely can't tell (run `/setup-matt-pocock-skills interactive` if you'd rather be walked through each decision)
 
 4. Bam - you're ready to go.
 
@@ -150,7 +151,7 @@ Skills I use daily for code work.
 **User-invoked**
 
 - **[ask-matt](./skills/engineering/ask-matt/SKILL.md)** — Ask which skill or flow fits your situation. A router over the user-invoked skills in this repo.
-- **[grill-with-docs](./skills/engineering/grill-with-docs/SKILL.md)** — Grilling session that also builds your project's domain model, sharpening terminology and updating `CONTEXT.md` and ADRs inline.
+- **[grill-with-docs](./skills/engineering/grill-with-docs/SKILL.md)** — Grilling session that also builds your project's domain model, sharpening terminology and updating `CONTEXT.md` and ADRs inline. Supports autonomy tiers (`assisted` / `autonomous`) for fewer or zero questions.
 - **[triage](./skills/engineering/triage/SKILL.md)** — Move issues through a state machine of triage roles.
 - **[improve-codebase-architecture](./skills/engineering/improve-codebase-architecture/SKILL.md)** — Scan a codebase for deepening opportunities, present them as a visual HTML report, then grill through whichever one you pick.
 - **[setup-matt-pocock-skills](./skills/engineering/setup-matt-pocock-skills/SKILL.md)** — Configure this repo for the engineering skills (issue tracker, triage labels, domain doc layout). Run once per repo before using the other engineering skills.
@@ -171,14 +172,14 @@ General workflow tools, not code-specific.
 
 **User-invoked**
 
-- **[grill-me](./skills/productivity/grill-me/SKILL.md)** — Get relentlessly interviewed about a plan or design until every branch of the decision tree is resolved.
+- **[grill-me](./skills/productivity/grill-me/SKILL.md)** — Get relentlessly interviewed about a plan or design until every branch of the decision tree is resolved. Supports autonomy tiers (`assisted` / `autonomous`) for fewer or zero questions.
 - **[handoff](./skills/productivity/handoff/SKILL.md)** — Compact the current conversation into a handoff document so another agent can continue the work.
 - **[teach](./skills/productivity/teach/SKILL.md)** — Teach the user a new skill or concept over multiple sessions, using the current directory as a stateful teaching workspace.
 - **[writing-great-skills](./skills/productivity/writing-great-skills/SKILL.md)** — Reference for writing and editing skills well: the vocabulary and principles that make a skill predictable.
 
 **Model-invoked**
 
-- **[grilling](./skills/productivity/grilling/SKILL.md)** — Interview the user relentlessly about a plan or design until every branch of the decision tree is resolved. The reusable loop behind `grill-me` and `grill-with-docs`.
+- **[grilling](./skills/productivity/grilling/SKILL.md)** — Interview the user relentlessly about a plan or design until every branch of the decision tree is resolved. The reusable loop behind `grill-me` and `grill-with-docs`. Supports autonomy tiers (`assisted` / `autonomous`) for fewer or zero questions.
 
 ### Misc
 

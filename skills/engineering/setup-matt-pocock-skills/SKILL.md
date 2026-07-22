@@ -12,7 +12,9 @@ Scaffold the per-repo configuration that the engineering skills assume:
 - **Triage labels** — the strings used for the five canonical triage roles
 - **Domain docs** — where `CONTEXT.md` and ADRs live, and the consumer rules for reading them
 
-This is a prompt-driven skill, not a deterministic script. Explore, present what you found, confirm with the user, then write.
+**Defaults-first**: detect everything you can, apply the defaults silently, write the config, and report what you chose. Do **not** walk the user through decisions — almost every repo takes the defaults. Ask a question only when a trigger in the "When to ask" list fires, and ask only that one question.
+
+The user can invoke `/setup-matt-pocock-skills interactive` to get the full question-by-question walkthrough instead (see "Interactive mode" at the end).
 
 ## Process
 
@@ -26,35 +28,20 @@ Look at the current repo to understand its starting state. Read whatever exists;
 - `docs/adr/` and any `src/*/docs/adr/` directories
 - `docs/agents/` — does this skill's prior output already exist?
 - `.scratch/` — sign that a local-markdown issue tracker convention is already in use
+- The tracker's existing labels (e.g. `gh label list`) — do any resemble triage-role labels?
 
-### 2. Present findings and ask
+### 2. Decide
 
-Summarise what's present and what's missing. Then walk the user through the three decisions **one at a time** — present a section, get the user's answer, then move to the next. Don't dump all three at once.
+Resolve each decision from the exploration, in this order of preference. No user input.
 
-Assume the user does not know what these terms mean. Each section starts with a short explainer (what it is, why these skills need it, what changes if they pick differently). Then show the choices and the default.
+**Issue tracker:**
 
-**Section A — Issue tracker.**
+- Remote points at GitHub → **GitHub** (uses the `gh` CLI)
+- Remote points at GitLab (`gitlab.com` or self-hosted) → **GitLab** (uses the [`glab`](https://gitlab.com/gitlab-org/cli) CLI)
+- No remote, or `.scratch/` already in use → **Local markdown** (issues as files under `.scratch/<feature>/`)
+- **PRs as a request surface** — default **no**. (Only meaningful for GitHub/GitLab; the user can flip it later in `docs/agents/issue-tracker.md`, or `/triage` will still handle any PR named explicitly.)
 
-> Explainer: The "issue tracker" is where issues live for this repo. Skills like `to-issues`, `triage`, `to-prd`, and `qa` read from and write to it — they need to know whether to call `gh issue create`, write a markdown file under `.scratch/`, or follow some other workflow you describe. Pick the place you actually track work for this repo.
-
-Default posture: these skills were designed for GitHub. If a `git remote` points at GitHub, propose that. If a `git remote` points at GitLab (`gitlab.com` or a self-hosted host), propose GitLab. Otherwise (or if the user prefers), offer:
-
-- **GitHub** — issues live in the repo's GitHub Issues (uses the `gh` CLI)
-- **GitLab** — issues live in the repo's GitLab Issues (uses the [`glab`](https://gitlab.com/gitlab-org/cli) CLI)
-- **Local markdown** — issues live as files under `.scratch/<feature>/` in this repo (good for solo projects or repos without a remote)
-- **Other** (Jira, Linear, etc.) — ask the user to describe the workflow in one paragraph; the skill will record it as freeform prose
-
-If — and only if — the user picked **GitHub** or **GitLab**, ask one follow-up:
-
-> Explainer: Open-source repos often receive feature requests as pull requests, not just issues — a PR is an issue with attached code. If you turn this on, `/triage` pulls *external* PRs into the same queue and runs them through the same labels and states as issues (collaborators' in-flight PRs are left alone). Leave it off if PRs aren't a request surface for you.
-
-- **PRs as a request surface** — yes / no (default: no). Record the answer in `docs/agents/issue-tracker.md`. For local-markdown and other trackers, skip this question — there are no PRs.
-
-**Section B — Triage label vocabulary.**
-
-> Explainer: When the `triage` skill processes an incoming issue, it moves it through a state machine — needs evaluation, waiting on reporter, ready for an AFK agent to pick up, ready for a human, or won't fix. To do that, it needs to apply labels (or the equivalent in your issue tracker) that match strings *you've actually configured*. If your repo already uses different label names (e.g. `bug:triage` instead of `needs-triage`), map them here so the skill applies the right ones instead of creating duplicates.
-
-The five canonical roles:
+**Triage labels:** the five canonical roles, each mapped to its own name:
 
 - `needs-triage` — maintainer needs to evaluate
 - `needs-info` — waiting on reporter
@@ -62,39 +49,38 @@ The five canonical roles:
 - `ready-for-human` — needs human implementation
 - `wontfix` — will not be actioned
 
-Default: each role's string equals its name. Ask the user if they want to override any. If their issue tracker has no existing labels, the defaults are fine.
+If the tracker already has labels that are obvious equivalents (`triage`, `more-info-needed`, `wont-fix`…), map to the existing strings instead of creating near-duplicates, and say so in the report.
 
-**Section C — Domain docs.**
+**Domain docs:**
 
-> Explainer: Some skills (`improve-codebase-architecture`, `diagnosing-bugs`, `tdd`) read a `CONTEXT.md` file to learn the project's domain language, and `docs/adr/` for past architectural decisions. They need to know whether the repo has one global context or multiple (e.g. a monorepo with separate frontend/backend contexts) so they look in the right place.
+- `CONTEXT-MAP.md` exists at the root → **multi-context**
+- Otherwise → **single-context** (one `CONTEXT.md` + `docs/adr/` at the repo root)
 
-Confirm the layout:
+**Autonomy:** default tier `interactive` — no detection, just write `docs/agents/autonomy.md` from the seed so the three tiers (`interactive` / `assisted` / `autonomous`), the critical-decision test, and the decision-log rules are on hand. Skills that interview or gate on approval (`grilling`, `to-prd`, `to-issues`) read this file; the user flips the default by editing one line. **If the file already exists, preserve it** — a hand-edited default tier is a deliberate choice; never reset it on re-run. Rewrite it only in interactive mode or when the user explicitly asks for a reset.
 
-- **Single-context** — one `CONTEXT.md` + `docs/adr/` at the repo root. Most repos are this.
-- **Multi-context** — `CONTEXT-MAP.md` at the root pointing to per-context `CONTEXT.md` files (typically a monorepo).
+**File to carry the `## Agent skills` block:**
 
-### 3. Confirm and edit
-
-Show the user a draft of:
-
-- The `## Agent skills` block to add to whichever of `CLAUDE.md` / `AGENTS.md` is being edited (see step 4 for selection rules)
-- The contents of `docs/agents/issue-tracker.md`, `docs/agents/triage-labels.md`, `docs/agents/domain.md`
-
-Let them edit before writing.
-
-### 4. Write
-
-**Pick the file to edit:**
-
-- If `CLAUDE.md` exists, edit it.
-- Else if `AGENTS.md` exists, edit it.
-- If neither exists, ask the user which one to create — don't pick for them.
+- `CLAUDE.md` exists → edit it
+- Else `AGENTS.md` exists → edit it
+- Neither exists → create `CLAUDE.md`
 
 Never create `AGENTS.md` when `CLAUDE.md` already exists (or vice versa) — always edit the one that's already there.
 
-If an `## Agent skills` block already exists in the chosen file, update its contents in-place rather than appending a duplicate. Don't overwrite user edits to the surrounding sections.
+### When to ask
 
-The block:
+Only these situations warrant a question — and each gets exactly one:
+
+1. **Unrecognisable tracker** — a remote exists but points at neither GitHub nor GitLab (Bitbucket, a bare host), or the repo shows signs of an external tracker (Jira/Linear keys in commit messages or issue templates). Ask where issues actually live; for "other" trackers, ask the user to describe the workflow in one paragraph and record it as freeform prose.
+2. **Conflicting prior config** — `docs/agents/` already exists and disagrees with what exploration found (e.g. it says GitLab but the remote is GitHub). Ask which is right; don't silently overwrite a deliberate choice.
+3. **Ambiguous label mapping** — existing tracker labels *partially* overlap the canonical roles in a way that isn't an obvious equivalence (e.g. both `triage` and `needs-review` exist). Show the proposed mapping and ask for a yes/adjust.
+
+Everything else proceeds on defaults.
+
+### 3. Write
+
+Write directly — no draft-and-confirm round-trip.
+
+**The `## Agent skills` block** in the chosen file. If one already exists, update its contents in-place rather than appending a duplicate. Don't overwrite user edits to the surrounding sections.
 
 ```markdown
 ## Agent skills
@@ -110,6 +96,10 @@ The block:
 ### Domain docs
 
 [one-line summary of layout — "single-context" or "multi-context"]. See `docs/agents/domain.md`.
+
+### Autonomy
+
+[one-line summary — default tier and that skills accept per-invocation overrides]. See `docs/agents/autonomy.md`.
 ```
 
 Then write the three docs files using the seed templates in this skill folder as a starting point:
@@ -119,9 +109,20 @@ Then write the three docs files using the seed templates in this skill folder as
 - [issue-tracker-local.md](./issue-tracker-local.md) — local-markdown issue tracker
 - [triage-labels.md](./triage-labels.md) — label mapping
 - [domain.md](./domain.md) — domain doc consumer rules + layout
+- [autonomy.md](./autonomy.md) — autonomy tiers, critical-decision test, decision-log rules
 
 For "other" issue trackers, write `docs/agents/issue-tracker.md` from scratch using the user's description.
 
-### 5. Done
+### 4. Report
 
-Tell the user the setup is complete and which engineering skills will now read from these files. Mention they can edit `docs/agents/*.md` directly later — re-running this skill is only necessary if they want to switch issue trackers or restart from scratch.
+One compact summary — the user's chance to veto after the fact, not a gate before writing:
+
+- The decisions taken (tracker, PRs-as-surface, label mapping, doc layout, autonomy tier) with a one-word reason each ("GitHub — remote", "single-context — no CONTEXT-MAP.md", "interactive — default").
+- Which file got the `## Agent skills` block.
+- How to override: edit `docs/agents/*.md` directly (they're plain markdown, safe to hand-edit), or re-run `/setup-matt-pocock-skills interactive` to redo the decisions with questions.
+
+Mention which engineering skills now read from these files. Re-running this skill is only necessary to switch issue trackers or restart from scratch.
+
+## Interactive mode
+
+On `/setup-matt-pocock-skills interactive`, replace step 2's silent defaults with a walkthrough: present the three decision areas **one at a time** — issue tracker (plus the PRs-as-a-request-surface follow-up for GitHub/GitLab), triage label vocabulary, domain doc layout. Assume the user does not know what these terms mean: start each section with a short explainer (what it is, why these skills need it, what changes if they pick differently), then show the choices with the default marked. In this mode, also show a draft of the `## Agent skills` block and the three docs files before writing, and let the user edit.
