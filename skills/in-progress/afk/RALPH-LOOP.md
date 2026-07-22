@@ -15,7 +15,7 @@ Templates for the files `/afk` generates into `.sandcastle/`. Adapt before writi
 Each issue goes through **implement → independent review → merge → close**, fully unattended:
 
 1. **Size, then implement** in a warm sandbox on `agent/issue-<n>`: the ticket's effort tier (label, or dispatcher judgment) picks the implementer's model, and it iterates until the full test suite is green (`<promise>COMPLETE</promise>`).
-2. **Review** in the *same sandbox but a fresh context*: an independent reviewer agent diffs the branch against main, re-runs the suite, and either approves or writes findings to `REVIEW.md`. Change requests loop back to an implementer pass, up to `MAX_REVIEW_ROUNDS`.
+2. **Rebase, then review**: the branch is rebased onto the current main first (a conflict is a normal failure, routed onward), so the verdict is about the code that will actually land. Then an independent reviewer agent in the *same sandbox but a fresh context* diffs the branch against main, re-runs the suite, and either approves or writes findings to `REVIEW.md`. Change requests loop back to an implementer pass, up to `MAX_REVIEW_ROUNDS`.
 3. **Merge on double green only — triple when the repo has CI.** Implementer `COMPLETE` *and* reviewer `<verdict>APPROVED</verdict>`; if CI exists, the branch is pushed and must go CI-green before merging, and main is watched after the merge — a red main auto-reverts the landing (clean, since each landing is one `--no-ff` merge commit). Merges are the only cross-issue mutation, so they are always serialized, even in the parallel template.
 4. **Failure at any stage** (blocked, non-converging, crash, merge conflict): the issue is relabeled `needs-triage`, and — unless it is already a continuation — a fresh `[continuation]` issue is filed with `ready-for-agent`, pointing at the branch, so a **new session picks the work up** (tonight if budget remains, since the queue is re-queried each round). A continuation that fails again goes back to the human queue instead of spawning a chain.
 
@@ -193,6 +193,18 @@ async function implementAndReview(issue: Issue): Promise<boolean> {
     logging: { type: "file", path: `.sandcastle/logs/issue-${issue.number}.log` },
   });
   if (impl.completionSignal !== "<promise>COMPLETE</promise>") return false;
+
+  // Judge the branch against the main it will actually land on — parallel
+  // waves especially can start from a base that moved beneath them. A
+  // rebase conflict is a normal failure (the continuation issue lands it
+  // later); the reviewer re-runs the suite on the rebased code anyway.
+  try {
+    await sandbox.exec(`git rebase ${MAIN_BRANCH}`);
+  } catch {
+    try { await sandbox.exec(`git rebase --abort`); } catch {}
+    console.error(`[ralph] #${issue.number} does not rebase onto ${MAIN_BRANCH}`);
+    return false;
+  }
 
   for (let round = 1; round <= MAX_REVIEW_ROUNDS; round++) {
     const review = await sandbox.run({
