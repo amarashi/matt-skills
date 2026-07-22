@@ -8,6 +8,7 @@ Templates for the files `/afk` generates into `.sandcastle/`. Adapt before writi
 - Both templates load `.sandcastle/.env` into the host process first: the tracker CLI calls (`gh issue list`/`edit`) run **host-side** via `execSync`, so a `GH_TOKEN` that lives only in `.sandcastle/.env` is invisible to them without this. (Sandcastle handles the sandbox's env itself.) `process.loadEnvFile` needs Node 20.12+; on older Node, inline a five-line parser instead.
 - The orchestration script must be launched from a clean checkout of the default branch — merges land on whatever branch the host is on.
 - If the user wants agents routed through OpenRouter (or named a non-Anthropic model), set `MODEL` to the OpenRouter slug they chose — different slugs per role are fine too (e.g. a cheaper model for the implementer, a stronger one for the reviewer, by splitting `agent()` into `implementer()`/`reviewer()`).
+- For local models via Ollama: pick a coding model with **at least 32k context** (small-context models fall apart on agentic loops). Mixing providers per role is often the sweet spot — a local implementer with a cloud reviewer keeps the merge gate strong while the token-heavy implementation runs free.
 
 ## The per-issue pipeline (shared by both templates)
 
@@ -34,12 +35,19 @@ const MAX_IMPL_ITERATIONS = 10; // "keep working until green" budget per pass
 const MAX_REVIEW_ROUNDS = 3;
 
 // Model routing: direct Anthropic by default; through OpenRouter when
-// OPENROUTER_API_KEY is set in .sandcastle/.env. OpenRouter speaks the
-// Anthropic Messages protocol at /api, so the sandboxed Claude Code works
-// unchanged — only the base URL, auth token, and model slug differ. The
-// blank ANTHROPIC_API_KEY is deliberate: it forces the auth-token path.
-const OPENROUTER = !!process.env.OPENROUTER_API_KEY;
-const MODEL = OPENROUTER ? "anthropic/claude-opus-4.8" : "claude-opus-4-8"; // any OpenRouter slug works
+// OPENROUTER_API_KEY is set; local Ollama when OLLAMA_MODEL is set (Ollama
+// wins if both are present). All three speak the Anthropic Messages
+// protocol, so the sandboxed Claude Code runs unchanged — only the base
+// URL, auth token, and model name differ. Blank ANTHROPIC_API_KEY is
+// deliberate: it forces the auth-token path.
+const OLLAMA = process.env.OLLAMA_MODEL; // e.g. "qwen3-coder:30b"
+const OPENROUTER = !OLLAMA && !!process.env.OPENROUTER_API_KEY;
+// Inside the sandbox, "localhost" is the container itself —
+// host.docker.internal reaches the host's Ollama. On Linux, either pass
+// network: "host" to docker() below (then use http://localhost:11434) or
+// make the container's host-gateway resolvable.
+const OLLAMA_URL = process.env.OLLAMA_URL ?? "http://host.docker.internal:11434";
+const MODEL = OLLAMA ?? (OPENROUTER ? "anthropic/claude-opus-4.8" : "claude-opus-4-8");
 const agent = () =>
   claudeCode(MODEL, {
     effort: "high",
@@ -48,6 +56,18 @@ const agent = () =>
         ANTHROPIC_BASE_URL: "https://openrouter.ai/api",
         ANTHROPIC_AUTH_TOKEN: process.env.OPENROUTER_API_KEY!,
         ANTHROPIC_API_KEY: "",
+      },
+    }),
+    ...(OLLAMA && {
+      env: {
+        ANTHROPIC_BASE_URL: OLLAMA_URL,
+        ANTHROPIC_AUTH_TOKEN: "ollama", // required by the client, ignored by Ollama
+        ANTHROPIC_API_KEY: "",
+        // Claude Code's internal tier calls must map to the local model too,
+        // or it will request claude-* names the local server doesn't have.
+        ANTHROPIC_DEFAULT_OPUS_MODEL: OLLAMA,
+        ANTHROPIC_DEFAULT_SONNET_MODEL: OLLAMA,
+        ANTHROPIC_DEFAULT_HAIKU_MODEL: OLLAMA,
       },
     }),
   });

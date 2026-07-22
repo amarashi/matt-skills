@@ -58,8 +58,12 @@ Verify `.sandcastle/.env` contains:
 
 - **Model access**, one of:
   - `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` — agents talk to Anthropic directly (default), or
-  - `OPENROUTER_API_KEY` — agents are routed through [OpenRouter](https://openrouter.ai), which speaks the Anthropic Messages protocol, so any OpenRouter model slug can power the agents (see the routing block in [RALPH-LOOP.md](RALPH-LOOP.md)). If both are present, OpenRouter wins unless the user says otherwise.
+  - `OPENROUTER_API_KEY` — agents are routed through [OpenRouter](https://openrouter.ai), which speaks the Anthropic Messages protocol, so any OpenRouter model slug can power the agents (see the routing block in [RALPH-LOOP.md](RALPH-LOOP.md)), or
+  - `OLLAMA_MODEL` (e.g. `qwen3-coder:30b`, plus optional `OLLAMA_URL`) — agents run on **local models** via [Ollama](https://ollama.com), which also speaks the Anthropic Messages protocol. No API key at all.
+  - Precedence when several are present: Ollama > OpenRouter > Anthropic, unless the user says otherwise.
 - A tracker token if the tracker CLI needs one inside the sandbox (e.g. `GH_TOKEN`).
+
+**Ollama preflight:** when `OLLAMA_MODEL` is set, verify before launching that the Ollama server responds and the model is pulled (`curl <url>/api/tags`, or `ollama list`). From inside the sandbox `localhost` is the container, so the default URL is `http://host.docker.internal:11434`; on Linux use `network: "host"` in the docker() config (then `http://localhost:11434`). If the server is down or the model missing, stop and say exactly what to run — don't launch a loop that will fail on its first call.
 
 If anything is missing, **stop and tell the user exactly which variable to add to `.sandcastle/.env`**, then have them re-invoke `/afk`. Never generate, guess, echo, or commit token values, and confirm `.env` is git-ignored (the scaffold's `.gitignore` handles this — verify it survived).
 
@@ -75,7 +79,7 @@ Write three files from the templates in [RALPH-LOOP.md](RALPH-LOOP.md), substitu
 
 The launch must start from a clean checkout of the default branch — merges land on whatever branch the host is on.
 
-**Model routing:** the generated `agent()` helper defaults to Anthropic directly, and flips to OpenRouter automatically when `OPENROUTER_API_KEY` is set. If the user names a model (`/afk model=qwen/qwen3-coder`, "use DeepSeek for the implementer"), set the `MODEL` slug(s) accordingly — including split implementer/reviewer models.
+**Model routing:** the generated `agent()` helper defaults to Anthropic directly, flips to OpenRouter when `OPENROUTER_API_KEY` is set, and to local Ollama when `OLLAMA_MODEL` is set. If the user names a model (`/afk model=qwen/qwen3-coder`, "implement locally, review with Opus"), set the `MODEL` slug(s) accordingly — split implementer/reviewer providers are encouraged: a local implementer with a cloud reviewer keeps the merge gate strong while the token-heavy work runs free.
 
 Show the user a one-paragraph summary of what was generated (mode, cap, branch naming, review rounds, model routing) before launching — unless they invoked with arguments that already pin these down.
 
