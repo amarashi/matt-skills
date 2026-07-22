@@ -30,6 +30,7 @@ The user invokes `/afk`, optionally with arguments:
 - `/afk` — sequential Ralph loop (default): one sandboxed agent at a time, one issue per iteration.
 - `/afk parallel` — fan out over the queue, one sandboxed agent *per issue* on its own branch, capped at 3 concurrent sandboxes (the user can name a different cap).
 - `/afk dry-run` — do all the preflight and generation, show what would launch, but don't start the loop.
+- `/afk doctor` — run the entire pipeline against a throwaway canary ticket on a scratch branch, so the first real night isn't the test (see Doctor below).
 
 ## Process
 
@@ -104,6 +105,18 @@ When the user returns, point them at:
 - **Continuations** — work that didn't converge was handed to a fresh session via `[continuation]` issues; any still open show what's mid-flight or awaiting the next run.
 - **Failures** — issues the loop gave up on (including failed continuations) are relabeled `needs-triage` with a comment explaining the blocker; they'll surface next `/triage`.
 - **Logs** — `.sandcastle/logs/issue-<n>*.log` per issue: implementation, each review round, each fix round.
+
+## Doctor (shakedown)
+
+`/afk doctor` proves the whole machine end-to-end without risking main or real tickets. Run it after first setup, after changing providers/models, and after any Sandcastle upgrade.
+
+1. **Preflight** — everything from steps 1–3 of the process, plus: the sandbox image builds, and the tracker CLI is authenticated *host-side with `.sandcastle/.env` loaded* (that exact combination is what the loop uses).
+2. **Scratch base** — create `afk-doctor` from the default branch and run the whole exercise from it. The doctor must never merge into the real default branch.
+3. **Canary ticket** — file a real issue: title `[doctor] canary`, labels `ready-for-agent` + `effort:light`, body instructing exactly one trivial change (e.g. "create `CANARY.md` containing the issue number") with an acceptance criterion.
+4. **Run** — generate a doctor variant of `main.ts` (`MAX_ISSUES_PER_NIGHT = 1`, sequential) and run it in the foreground, narrating each stage as it happens: sandbox up, implementer signal, review verdict, merge, close.
+5. **Verify** — the merge commit exists on `afk-doctor`, the canary issue is closed with the summary comment, and per-stage logs exist under `.sandcastle/logs/`.
+6. **Clean up** — close any leftover canary/continuation issues, delete `afk-doctor` and the canary's `agent/issue-<n>` branch (local and remote), return to the original branch.
+7. **Report** — pass/fail per stage; on failure, the relevant log excerpt and the most likely fix. A doctor failure means: do not launch a real night until it passes.
 
 ## Guardrails
 
