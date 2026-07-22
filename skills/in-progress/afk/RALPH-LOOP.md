@@ -14,7 +14,7 @@ Templates for the files `/afk` generates into `.sandcastle/`. Adapt before writi
 
 Each issue goes through **implement → independent review → merge → close**, fully unattended:
 
-1. **Implement** in a warm sandbox on `agent/issue-<n>`, iterating until the full test suite is green (`<promise>COMPLETE</promise>`).
+1. **Size, then implement** in a warm sandbox on `agent/issue-<n>`: the ticket's effort tier (label, or dispatcher judgment) picks the implementer's model, and it iterates until the full test suite is green (`<promise>COMPLETE</promise>`).
 2. **Review** in the *same sandbox but a fresh context*: an independent reviewer agent diffs the branch against main, re-runs the suite, and either approves or writes findings to `REVIEW.md`. Change requests loop back to an implementer pass, up to `MAX_REVIEW_ROUNDS`.
 3. **Merge on double green only** — implementer `COMPLETE` *and* reviewer `<verdict>APPROVED</verdict>`. The host merges the branch into main, pushes, and closes the issue. Merges are the only cross-issue mutation, so they are always serialized, even in the parallel template.
 4. **Failure at any stage** (blocked, non-converging, crash, merge conflict): the issue is relabeled `needs-triage`, and — unless it is already a continuation — a fresh `[continuation]` issue is filed with `ready-for-agent`, pointing at the branch, so a **new session picks the work up** (tonight if budget remains, since the queue is re-queried each round). A continuation that fails again goes back to the human queue instead of spawning a chain.
@@ -47,49 +47,105 @@ const OPENROUTER = !OLLAMA && !!process.env.OPENROUTER_API_KEY;
 // network: "host" to docker() below (then use http://localhost:11434) or
 // make the container's host-gateway resolvable.
 const OLLAMA_URL = process.env.OLLAMA_URL ?? "http://host.docker.internal:11434";
-const MODEL = OLLAMA ?? (OPENROUTER ? "anthropic/claude-opus-4.8" : "claude-opus-4-8");
-const agent = () =>
-  claudeCode(MODEL, {
-    effort: "high",
-    ...(OPENROUTER && {
+
+// Effort tiers: each ticket runs on the smallest model that can handle it.
+// The tier comes from an effort:* label (set at triage), else the dispatcher
+// below judges it. Reviewer always runs the deep tier — it guards main.
+type Tier = "light" | "standard" | "deep";
+const MODELS: Record<Tier, string> = OLLAMA
+  ? { light: OLLAMA, standard: OLLAMA, deep: process.env.OLLAMA_MODEL_DEEP ?? OLLAMA }
+  : OPENROUTER
+    ? { light: "anthropic/claude-haiku-4.5", standard: "anthropic/claude-sonnet-5", deep: "anthropic/claude-opus-4.8" }
+    : { light: "claude-haiku-4-5", standard: "claude-sonnet-5", deep: "claude-opus-4-8" };
+
+const routedEnv = OPENROUTER
+  ? {
       env: {
         ANTHROPIC_BASE_URL: "https://openrouter.ai/api",
         ANTHROPIC_AUTH_TOKEN: process.env.OPENROUTER_API_KEY!,
         ANTHROPIC_API_KEY: "",
       },
-    }),
-    ...(OLLAMA && {
-      env: {
-        ANTHROPIC_BASE_URL: OLLAMA_URL,
-        ANTHROPIC_AUTH_TOKEN: "ollama", // required by the client, ignored by Ollama
-        ANTHROPIC_API_KEY: "",
-        // Claude Code's internal tier calls must map to the local model too,
-        // or it will request claude-* names the local server doesn't have.
-        ANTHROPIC_DEFAULT_OPUS_MODEL: OLLAMA,
-        ANTHROPIC_DEFAULT_SONNET_MODEL: OLLAMA,
-        ANTHROPIC_DEFAULT_HAIKU_MODEL: OLLAMA,
-      },
-    }),
-  });
+    }
+  : OLLAMA
+    ? {
+        env: {
+          ANTHROPIC_BASE_URL: OLLAMA_URL,
+          ANTHROPIC_AUTH_TOKEN: "ollama", // required by the client, ignored by Ollama
+          ANTHROPIC_API_KEY: "",
+          // Claude Code's internal tier calls must map to local models too,
+          // or it will request claude-* names the local server doesn't have.
+          ANTHROPIC_DEFAULT_OPUS_MODEL: MODELS.deep,
+          ANTHROPIC_DEFAULT_SONNET_MODEL: MODELS.standard,
+          ANTHROPIC_DEFAULT_HAIKU_MODEL: MODELS.light,
+        },
+      }
+    : {};
+
+const agent = (tier: Tier) =>
+  claudeCode(MODELS[tier], { effort: tier === "deep" ? "high" : "medium", ...routedEnv });
+
 const sh = (cmd: string) => execSync(cmd, { encoding: "utf8" });
 
-type Issue = { number: number; title: string };
+// Dispatcher: sizes an unlabeled ticket with one cheap light-tier call.
+// All three providers speak the Messages API; both auth headers are sent
+// and each server reads the one it wants. Fails safe to "standard".
+// (Anthropic-direct with only an OAuth token has no API key for raw fetch —
+// the catch handles that; label your tickets or use OpenRouter/Ollama.)
+const API_URL = OLLAMA ? OLLAMA_URL : OPENROUTER ? "https://openrouter.ai/api" : "https://api.anthropic.com";
+const API_KEY = OPENROUTER ? process.env.OPENROUTER_API_KEY! : process.env.ANTHROPIC_API_KEY ?? "ollama";
+
+async function judgeEffort(issue: Issue): Promise<Tier> {
+  const labeled = issue.labels.find((l) => l.startsWith("effort:"))?.slice(7);
+  if (labeled === "light" || labeled === "standard" || labeled === "deep") return labeled;
+  try {
+    const ticket = sh(`gh issue view ${issue.number} --json title,body`);
+    const res = await fetch(`${API_URL}/v1/messages`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "anthropic-version": "2023-06-01",
+        "x-api-key": API_KEY,
+        authorization: `Bearer ${API_KEY}`,
+      },
+      body: JSON.stringify({
+        model: MODELS.light,
+        max_tokens: 10,
+        system:
+          "You size engineering tickets by the model capability they need. Reply with exactly one word: light (mechanical, few-file change), standard (typical feature slice), or deep (cross-cutting, tricky logic, architecture, or vague spec). When unsure, pick the higher tier.",
+        messages: [{ role: "user", content: ticket }],
+      }),
+    });
+    const word = (await res.json()).content?.[0]?.text?.trim().toLowerCase();
+    if (word === "light" || word === "standard" || word === "deep") return word;
+  } catch (err) {
+    console.error(`[ralph] dispatcher failed for #${issue.number}:`, err);
+  }
+  return "standard";
+}
+
+type Issue = { number: number; title: string; labels: string[] };
 
 const readyIssues = (): Issue[] =>
   JSON.parse(
-    sh(`gh issue list --label "${READY_LABEL}" --state open --json number,title --limit 100`),
-  );
+    sh(`gh issue list --label "${READY_LABEL}" --state open --json number,title,labels --limit 100`),
+  ).map((i: any) => ({
+    number: i.number,
+    title: i.title,
+    labels: (i.labels ?? []).map((l: any) => l.name),
+  }));
 
 // Implement, then independently review, inside one warm sandbox.
 // True only when a reviewer with fresh context approved a fully green branch.
 async function implementAndReview(issue: Issue): Promise<boolean> {
+  const tier = await judgeEffort(issue);
+  console.log(`[ralph] #${issue.number} sized ${tier} → ${MODELS[tier]}`);
   await using sandbox = await createSandbox({
     branch: `agent/issue-${issue.number}`,
     sandbox: docker({ imageName: "sandcastle:local" }),
   });
 
   const impl = await sandbox.run({
-    agent: agent(),
+    agent: agent(tier),
     promptFile: ".sandcastle/prompt.md",
     promptArgs: { ISSUE_NUMBER: String(issue.number) },
     maxIterations: MAX_IMPL_ITERATIONS,
@@ -100,7 +156,7 @@ async function implementAndReview(issue: Issue): Promise<boolean> {
 
   for (let round = 1; round <= MAX_REVIEW_ROUNDS; round++) {
     const review = await sandbox.run({
-      agent: agent(),
+      agent: agent("deep"), // the merge gate always runs the strongest tier
       promptFile: ".sandcastle/review.md",
       promptArgs: { ISSUE_NUMBER: String(issue.number) },
       completionSignal: ["<verdict>APPROVED</verdict>", "<verdict>CHANGES</verdict>"],
@@ -109,7 +165,7 @@ async function implementAndReview(issue: Issue): Promise<boolean> {
     if (review.completionSignal === "<verdict>APPROVED</verdict>") return true;
 
     const fix = await sandbox.run({
-      agent: agent(),
+      agent: agent(tier),
       prompt:
         "Address every finding in REVIEW.md. Keep the full test suite green. Commit, then reply <promise>COMPLETE</promise> — or <promise>BLOCKED</promise> if a finding cannot be resolved.",
       maxIterations: MAX_IMPL_ITERATIONS,
