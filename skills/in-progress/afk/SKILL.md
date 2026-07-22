@@ -1,12 +1,12 @@
 ---
 name: afk
-description: Launch an AFK night shift — a Ralph loop of sandboxed Sandcastle agents that drains the ready-for-agent queue with one command.
+description: Launch an AFK night shift — a Ralph loop of sandboxed Sandcastle agents that drains the ready-for-agent queue and lands double-green work straight on main.
 disable-model-invocation: true
 ---
 
 # AFK
 
-Turn the `ready-for-agent` queue into shipped branches while the user is away, with a single invocation. This skill combines two pieces:
+Turn the `ready-for-agent` queue into merged commits on main while the user is away, with a single invocation. Each issue runs a fully unattended pipeline — **implement → independent review → merge → close** — and only lands when it is *double green*: the implementer's full test suite passes AND a reviewer agent with fresh context approves. Work that can't converge is handed to a fresh session via a `[continuation]` issue instead of waiting for a human. This skill combines two pieces:
 
 - **The Ralph technique** — a dumb outer loop that starts a *fresh* agent for each unit of work, with all state living outside the agent (here: the issue tracker and git). No context carries over between iterations; the tracker is the memory.
 - **[Sandcastle](https://github.com/mattpocock/sandcastle)** (`@ai-hero/sandcastle`) — runs each agent in an isolated Docker/Podman sandbox on its own branch and manages the worktrees and commits.
@@ -15,7 +15,7 @@ The user should never have to hand-configure Sandcastle. `/afk` does the preflig
 
 ## Reference docs
 
-- [RALPH-LOOP.md](RALPH-LOOP.md) — templates for the orchestration script (`main.ts`, sequential and parallel) and the per-issue agent prompt (`prompt.md`)
+- [RALPH-LOOP.md](RALPH-LOOP.md) — templates for the orchestration script (`main.ts`, sequential and parallel), the implementer prompt (`prompt.md`), and the independent reviewer prompt (`review.md`)
 
 ## Preconditions
 
@@ -30,6 +30,7 @@ The user invokes `/afk`, optionally with arguments:
 - `/afk` — sequential Ralph loop (default): one sandboxed agent at a time, one issue per iteration.
 - `/afk parallel` — fan out over the queue, one sandboxed agent *per issue* on its own branch, capped at 3 concurrent sandboxes (the user can name a different cap).
 - `/afk dry-run` — do all the preflight and generation, show what would launch, but don't start the loop.
+- `/afk doctor` — run the entire pipeline against a throwaway canary ticket on a scratch branch, so the first real night isn't the test (see Doctor below).
 
 ## Process
 
@@ -56,8 +57,14 @@ If `.sandcastle/` already exists, leave the user's `Dockerfile` and `.env` alone
 
 Verify `.sandcastle/.env` contains:
 
-- `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` — for the agent inside the sandbox.
+- **Model access**, one of:
+  - `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` — agents talk to Anthropic directly (default), or
+  - `OPENROUTER_API_KEY` — agents are routed through [OpenRouter](https://openrouter.ai), which speaks the Anthropic Messages protocol, so any OpenRouter model slug can power the agents (see the routing block in [RALPH-LOOP.md](RALPH-LOOP.md)), or
+  - `OLLAMA_MODEL` (e.g. `qwen3-coder:30b`, plus optional `OLLAMA_URL`) — agents run on **local models** via [Ollama](https://ollama.com), which also speaks the Anthropic Messages protocol. No API key at all.
+  - Precedence when several are present: Ollama > OpenRouter > Anthropic, unless the user says otherwise.
 - A tracker token if the tracker CLI needs one inside the sandbox (e.g. `GH_TOKEN`).
+
+**Ollama preflight:** when `OLLAMA_MODEL` is set, verify before launching that the Ollama server responds and the model is pulled (`curl <url>/api/tags`, or `ollama list`). From inside the sandbox `localhost` is the container, so the default URL is `http://host.docker.internal:11434`; on Linux use `network: "host"` in the docker() config (then `http://localhost:11434`). If the server is down or the model missing, stop and say exactly what to run — don't launch a loop that will fail on its first call.
 
 If anything is missing, **stop and tell the user exactly which variable to add to `.sandcastle/.env`**, then have them re-invoke `/afk`. Never generate, guess, echo, or commit token values, and confirm `.env` is git-ignored (the scaffold's `.gitignore` handles this — verify it survived).
 
@@ -65,12 +72,21 @@ This is the single one-time manual step. Every later `/afk` run sails through th
 
 ### 4. Generate the loop
 
-Write two files from the templates in [RALPH-LOOP.md](RALPH-LOOP.md), substituting the repo's actual label strings and tracker CLI commands:
+Write three files from the templates in [RALPH-LOOP.md](RALPH-LOOP.md), substituting the repo's actual label strings and tracker CLI commands:
 
-- `.sandcastle/main.ts` — the Ralph loop. Sequential template by default; parallel template for `/afk parallel`.
-- `.sandcastle/prompt.md` — the per-issue prompt each sandboxed agent receives. It must be **self-contained** (the sandbox agent does not have this skills repo): the issue's agent brief is the contract, TDD where possible, typecheck and single test files regularly, full suite once at the end, commit to the current branch, update the issue label, emit the completion signal.
+- `.sandcastle/main.ts` — the Ralph loop running the per-issue pipeline (implement → review → merge → close). Sequential template by default; parallel template for `/afk parallel`.
+- `.sandcastle/prompt.md` — the implementer prompt. It must be **self-contained** (the sandbox agent does not have this skills repo): the issue's agent brief is the contract, TDD where possible, keep working until the full suite is green, file out-of-scope discoveries as new `ready-for-agent` issues, emit the completion signal only when earned.
+- `.sandcastle/review.md` — the independent reviewer prompt: fresh context, re-runs the suite itself, checks the diff against the brief, approves or writes findings to `REVIEW.md` for a fix round.
 
-Show the user a one-paragraph summary of what was generated (mode, cap, branch naming, max issues) before launching — unless they invoked with arguments that already pin these down.
+The launch must start from a clean checkout of the default branch — merges land on whatever branch the host is on.
+
+When generating, substitute `VERIFY_CMD` with the repo's real test command (found in `package.json`/CI config) so every merged tree is re-verified host-side before pushing; leave it empty only if the host genuinely can't run the suite, and say so in the launch summary.
+
+**Model routing:** the generated `agent()` helper defaults to Anthropic directly, flips to OpenRouter when `OPENROUTER_API_KEY` is set, and to local Ollama when `OLLAMA_MODEL` is set. If the user names a model (`/afk model=qwen/qwen3-coder`, "implement locally, review with Opus"), set the model slug(s) accordingly — split implementer/reviewer providers are encouraged: a local implementer with a cloud reviewer keeps the merge gate strong while the token-heavy work runs free.
+
+**Effort dispatch:** each ticket's implementer runs on the smallest model tier that can handle it (`light` / `standard` / `deep`, mapped per provider in the `MODELS` table). The tier is resolved in order: an `effort:*` label on the issue (applied at `/triage` or `/to-issues`, where the ticket was already read and judged) → a one-call dispatcher on the light-tier model sizing the ticket at runtime → `standard` as the fail-safe. The **reviewer always runs the deep tier** regardless of the implementer's — it is the last gate before main, and skimping there is where autonomous merging goes wrong.
+
+Show the user a one-paragraph summary of what was generated (mode, cap, branch naming, review rounds, model routing) before launching — unless they invoked with arguments that already pin these down.
 
 ### 5. Launch
 
@@ -78,8 +94,11 @@ Run `npx tsx .sandcastle/main.ts` as a detached background process with output t
 
 - queue size and mode (sequential / parallel×N)
 - branch naming scheme (`agent/issue-<n>`)
+- the night budget: issue cap and the 8-hour wall-clock deadline
 - how to watch: `tail -f .sandcastle/logs/*.log`
-- how to stop: kill the `tsx` process (report its PID)
+- how to stop: `touch .sandcastle/STOP` for a graceful stop (finishes the in-flight issue, files the report), or kill the `tsx` process (report its PID) for a hard stop
+
+When routing through a paid provider (OpenRouter), also remind the user once to set a spend limit on the API key itself — provider-side caps are the only ones a crashed loop can't overrun.
 
 For `/afk dry-run`, print this report without launching.
 
@@ -87,13 +106,29 @@ For `/afk dry-run`, print this report without launching.
 
 When the user returns, point them at:
 
-- **Branches** — one `agent/issue-<n>` branch per attempted issue; each successful issue's label moved from `ready-for-agent` to `ready-for-human` (per the triage state machine, that means: ready for a human to review and merge).
-- **Failures** — issues the loop gave up on are relabeled `needs-triage` with a comment explaining the blocker; they'll surface next `/triage`.
-- **Logs** — `.sandcastle/logs/issue-<n>.log` per issue.
+- **The night report** — the loop files one "AFK night report" issue summarizing every attempt (landed / did not land, with pointers). It's created unlabeled on purpose, so it surfaces in `/triage`'s unlabeled bucket. Start there.
+- **Main** — every landed issue is already merged and pushed (`land agent/issue-<n>` merge commits), its issue closed with a summary comment. `git log origin/main` is the night's ledger.
+- **Continuations** — work that didn't converge was handed to a fresh session via `[continuation]` issues; any still open show what's mid-flight or awaiting the next run.
+- **Failures** — issues the loop gave up on (including failed continuations) are relabeled `needs-triage` with a comment explaining the blocker; they'll surface next `/triage`.
+- **Logs** — `.sandcastle/logs/issue-<n>*.log` per issue: implementation, each review round, each fix round.
+
+## Doctor (shakedown)
+
+`/afk doctor` proves the whole machine end-to-end without risking main or real tickets. Run it after first setup, after changing providers/models, and after any Sandcastle upgrade.
+
+1. **Preflight** — everything from steps 1–3 of the process, plus: the sandbox image builds, and the tracker CLI is authenticated *host-side with `.sandcastle/.env` loaded* (that exact combination is what the loop uses).
+2. **Scratch base** — create `afk-doctor` from the default branch and run the whole exercise from it. The doctor must never merge into the real default branch.
+3. **Canary ticket** — file a real issue: title `[doctor] canary`, labels `ready-for-agent` + `effort:light`, body instructing exactly one trivial change (e.g. "create `CANARY.md` containing the issue number") with an acceptance criterion.
+4. **Run** — generate a doctor variant of `main.ts` (`MAX_ISSUES_PER_NIGHT = 1`, sequential) and run it in the foreground, narrating each stage as it happens: sandbox up, implementer signal, review verdict, merge, close.
+5. **Verify** — the merge commit exists on `afk-doctor`, the canary issue is closed with the summary comment, and per-stage logs exist under `.sandcastle/logs/`.
+6. **Clean up** — close any leftover canary/continuation issues, delete `afk-doctor` and the canary's `agent/issue-<n>` branch (local and remote), return to the original branch.
+7. **Report** — pass/fail per stage; on failure, the relevant log excerpt and the most likely fix. A doctor failure means: do not launch a real night until it passes.
 
 ## Guardrails
 
 - **Sandbox always.** Never substitute `noSandbox()`. If Docker/Podman is unavailable, stop.
-- **Branch per issue, never head.** All runs use `branchStrategy: { type: "branch", ... }`. Parallel runs on a shared branch corrupt each other; merging to head unattended is not this skill's call to make.
-- **Bounded loop.** The generated `main.ts` caps total issues per night and never retries a failed issue in the same run — a failed issue is relabeled and skipped, Ralph-style, so one poisoned issue can't burn the night's budget.
-- **Merging is human work.** The loop stops at `ready-for-human`. It never merges, never pushes to the default branch, never closes issues it didn't fully verify.
+- **Branch per issue, never head.** Every pipeline runs on its own `agent/issue-<n>` branch; only the serialized host-side merge step touches main.
+- **Merge on double green only — triple when CI exists.** A branch lands only when the implementer's full suite is green AND an independent fresh-context reviewer approved AND (if the repo has CI) the neutral runner passes the pushed branch. Main's CI is watched after each landing; a red main auto-reverts the merge commit. Merges are serialized and never forced; a conflicted merge is aborted and routed to a continuation issue, not resolved blind.
+- **Bounded loop.** The generated `main.ts` caps total issues per night and never retries a failed issue in the same run. Continuation issues count toward the cap and never chain — a failed continuation goes to `needs-triage`, not to a third session.
+- **Closing is earned.** An issue is closed only after its branch is merged and pushed. Everything else stays open and labeled truthfully.
+- **Protected paths.** Agents may not touch CI workflows, deploy config, secrets, or database migrations unless the agent brief explicitly authorizes that exact change — enforced twice: the implementer prompt forbids it, and the reviewer auto-rejects it. Unattended agents editing the machinery that verifies them is the one loop this system must never close.

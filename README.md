@@ -142,6 +142,8 @@ Software engineering fundamentals matter more than ever. These skills are my bes
 
 ## Reference
 
+The catalog below covers the shipped skills. For the complete inventory — every bucket (including drafts), every reference doc inside each skill folder, the scripts, and the files these skills generate into your repos — see [docs/repo-map.md](./docs/repo-map.md).
+
 These split on one axis — who can invoke them. **User-invoked** skills are reachable only when you type them (e.g. `/grill-me`); their job is to orchestrate. **Model-invoked** skills can be invoked by you _or_ reached for automatically by the agent when the task fits; they hold the reusable discipline. A user-invoked skill may invoke model-invoked skills, but never another user-invoked one.
 
 ### Engineering
