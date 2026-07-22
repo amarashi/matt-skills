@@ -14,6 +14,7 @@ Reachable only when you type them (`disable-model-invocation: true`).
 - **[to-issues](./to-issues/SKILL.md)** — Break any plan, spec, or PRD into independently-grabbable issues using vertical slices.
 - **[to-prd](./to-prd/SKILL.md)** — Turn the current conversation into a PRD and publish it to the issue tracker.
 - **[prototype](./prototype/SKILL.md)** — Build a throwaway prototype — a runnable terminal app for state/logic questions, or several toggleable UI variations.
+- **[ralph](./ralph/SKILL.md)** — Drain the `ready-for-agent` GitHub queue autonomously: a Ralph loop that runs each issue through a sandboxed TDD agent (sandcastle) and opens one PR per issue.
 
 ## Model-invoked
 

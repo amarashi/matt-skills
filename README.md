@@ -157,6 +157,7 @@ Skills I use daily for code work.
 - **[to-issues](./skills/engineering/to-issues/SKILL.md)** — Break any plan, spec, or PRD into independently-grabbable issues using vertical slices.
 - **[to-prd](./skills/engineering/to-prd/SKILL.md)** — Turn the current conversation into a PRD and publish it to the issue tracker. No interview — just synthesizes what you've already discussed.
 - **[prototype](./skills/engineering/prototype/SKILL.md)** — Build a throwaway prototype to flesh out a design — either a runnable terminal app for state/business-logic questions, or several radically different UI variations toggleable from one route.
+- **[ralph](./skills/engineering/ralph/SKILL.md)** — Drain the `ready-for-agent` GitHub queue autonomously: a Ralph loop that runs each issue through a sandboxed TDD agent (sandcastle) and opens one PR per issue. Scaffolds the harness for you — no hand-wiring.
 
 **Model-invoked**
 
