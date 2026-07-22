@@ -92,8 +92,11 @@ Run `npx tsx .sandcastle/main.ts` as a detached background process with output t
 
 - queue size and mode (sequential / parallel×N)
 - branch naming scheme (`agent/issue-<n>`)
+- the night budget: issue cap and the 8-hour wall-clock deadline
 - how to watch: `tail -f .sandcastle/logs/*.log`
-- how to stop: kill the `tsx` process (report its PID)
+- how to stop: `touch .sandcastle/STOP` for a graceful stop (finishes the in-flight issue, files the report), or kill the `tsx` process (report its PID) for a hard stop
+
+When routing through a paid provider (OpenRouter), also remind the user once to set a spend limit on the API key itself — provider-side caps are the only ones a crashed loop can't overrun.
 
 For `/afk dry-run`, print this report without launching.
 

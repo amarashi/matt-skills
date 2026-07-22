@@ -25,7 +25,7 @@ Shared helpers (include in the generated `main.ts`):
 import { claudeCode, createSandbox } from "@ai-hero/sandcastle";
 import { docker } from "@ai-hero/sandcastle/sandboxes/docker";
 import { execSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 
 // Host-side gh/tracker calls need the tokens from .sandcastle/.env too.
 process.loadEnvFile(".sandcastle/.env");
@@ -34,6 +34,12 @@ const READY_LABEL = "ready-for-agent";
 const MAX_ISSUES_PER_NIGHT = 10;
 const MAX_IMPL_ITERATIONS = 10; // "keep working until green" budget per pass
 const MAX_REVIEW_ROUNDS = 3;
+
+// Night budget: a hard wall-clock deadline, and a kill switch —
+// `touch .sandcastle/STOP` finishes the in-flight issue, then stops
+// cleanly (report still files). `kill <pid>` remains the hard stop.
+const NIGHT_DEADLINE = Date.now() + 8 * 3600_000;
+const keepGoing = () => Date.now() < NIGHT_DEADLINE && !existsSync(".sandcastle/STOP");
 
 // Model routing: direct Anthropic by default; through OpenRouter when
 // OPENROUTER_API_KEY is set; local Ollama when OLLAMA_MODEL is set (Ollama
@@ -310,7 +316,7 @@ One pipeline at a time. The queue is re-queried every round, so continuation iss
 const attempted = new Set<number>();
 let landed = 0;
 
-while (attempted.size < MAX_ISSUES_PER_NIGHT) {
+while (attempted.size < MAX_ISSUES_PER_NIGHT && keepGoing()) {
   stateCache.clear(); // issues close as the night progresses
   const issue = readyIssues().find((i) => !attempted.has(i.number) && unblocked(i));
   if (!issue) break; // queue drained or fully blocked — the only happy exit
@@ -347,7 +353,7 @@ const CONCURRENCY = 3;
 const attempted = new Set<number>();
 let landed = 0;
 
-while (attempted.size < MAX_ISSUES_PER_NIGHT) {
+while (attempted.size < MAX_ISSUES_PER_NIGHT && keepGoing()) {
   stateCache.clear(); // blockers may have landed in the previous wave
   const wave = readyIssues()
     .filter((i) => !attempted.has(i.number) && unblocked(i))
