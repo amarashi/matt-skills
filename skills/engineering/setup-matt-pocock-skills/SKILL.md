@@ -56,7 +56,7 @@ If the tracker already has labels that are obvious equivalents (`triage`, `more-
 - `CONTEXT-MAP.md` exists at the root → **multi-context**
 - Otherwise → **single-context** (one `CONTEXT.md` + `docs/adr/` at the repo root)
 
-**Autonomy:** default tier `interactive` — no detection, just write `docs/agents/autonomy.md` from the seed so the three tiers (`interactive` / `assisted` / `autonomous`), the critical-decision test, and the decision-log rules are on hand. Skills that interview or gate on approval (`grilling`, `to-prd`, `to-issues`) read this file; the user flips the default by editing one line.
+**Autonomy:** default tier `interactive` — no detection, just write `docs/agents/autonomy.md` from the seed so the three tiers (`interactive` / `assisted` / `autonomous`), the critical-decision test, and the decision-log rules are on hand. Skills that interview or gate on approval (`grilling`, `to-prd`, `to-issues`) read this file; the user flips the default by editing one line. **If the file already exists, preserve it** — a hand-edited default tier is a deliberate choice; never reset it on re-run. Rewrite it only in interactive mode or when the user explicitly asks for a reset.
 
 **File to carry the `## Agent skills` block:**
 

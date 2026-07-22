@@ -5,6 +5,7 @@ Templates for the files `/afk` generates into `.sandcastle/`. Adapt before writi
 - Replace `ready-for-agent`, `ready-for-human`, `needs-triage` with the actual label strings from `docs/agents/triage-labels.md`.
 - Replace the `gh` commands with the tracker CLI from `docs/agents/issue-tracker.md` (e.g. `glab` for GitLab). For local-markdown trackers, replace the queue query with a directory scan.
 - Keep the structure: fetch queue → fresh agent per issue → tracker is the only state carried between iterations.
+- Both templates load `.sandcastle/.env` into the host process first: the tracker CLI calls (`gh issue list`/`edit`) run **host-side** via `execSync`, so a `GH_TOKEN` that lives only in `.sandcastle/.env` is invisible to them without this. (Sandcastle handles the sandbox's env itself.) `process.loadEnvFile` needs Node 20.12+; on older Node, inline a five-line parser instead.
 
 ## `.sandcastle/main.ts` — sequential (default)
 
@@ -14,6 +15,9 @@ One sandboxed agent at a time. State lives in the tracker; each iteration re-que
 import { run, claudeCode } from "@ai-hero/sandcastle";
 import { docker } from "@ai-hero/sandcastle/sandboxes/docker";
 import { execSync } from "node:child_process";
+
+// Host-side gh/tracker calls need the tokens from .sandcastle/.env too.
+process.loadEnvFile(".sandcastle/.env");
 
 const READY_LABEL = "ready-for-agent";
 const MAX_ISSUES_PER_NIGHT = 10;
@@ -33,30 +37,39 @@ function readyIssues(): Issue[] {
 const attempted = new Set<number>();
 let shipped = 0;
 
-while (shipped + attempted.size < MAX_ISSUES_PER_NIGHT) {
+// `attempted` already contains the shipped issues — it alone is the night's bound.
+while (attempted.size < MAX_ISSUES_PER_NIGHT) {
   const issue = readyIssues().find((i) => !attempted.has(i.number));
   if (!issue) break; // queue drained — the only happy exit
 
   attempted.add(issue.number);
   console.log(`[ralph] picking up #${issue.number}: ${issue.title}`);
 
-  const result = await run({
-    agent: claudeCode("claude-opus-4-8", { effort: "high" }),
-    sandbox: docker({ imageName: "sandcastle:local" }),
-    promptFile: ".sandcastle/prompt.md",
-    promptArgs: { ISSUE_NUMBER: String(issue.number) },
-    maxIterations: MAX_ITERATIONS_PER_ISSUE,
-    branchStrategy: { type: "branch", branch: `agent/issue-${issue.number}` },
-    completionSignal: ["<promise>COMPLETE</promise>", "<promise>BLOCKED</promise>"],
-    logging: { type: "file", path: `.sandcastle/logs/issue-${issue.number}.log` },
-  });
+  let signal: string | undefined;
+  try {
+    const result = await run({
+      agent: claudeCode("claude-opus-4-8", { effort: "high" }),
+      sandbox: docker({ imageName: "sandcastle:local" }),
+      promptFile: ".sandcastle/prompt.md",
+      promptArgs: { ISSUE_NUMBER: String(issue.number) },
+      maxIterations: MAX_ITERATIONS_PER_ISSUE,
+      branchStrategy: { type: "branch", branch: `agent/issue-${issue.number}` },
+      completionSignal: ["<promise>COMPLETE</promise>", "<promise>BLOCKED</promise>"],
+      logging: { type: "file", path: `.sandcastle/logs/issue-${issue.number}.log` },
+    });
+    signal = result.completionSignal;
+    if (signal === "<promise>COMPLETE</promise>") {
+      shipped++;
+      console.log(`[ralph] #${issue.number} shipped on ${result.branch}`);
+    }
+  } catch (err) {
+    // A crashed sandbox must not kill the night — treat it like any failed issue.
+    console.error(`[ralph] #${issue.number} crashed:`, err);
+  }
 
-  if (result.completionSignal === "<promise>COMPLETE</promise>") {
-    shipped++;
-    console.log(`[ralph] #${issue.number} shipped on ${result.branch}`);
-  } else {
+  if (signal !== "<promise>COMPLETE</promise>") {
     // Ralph-style: never retry a poisoned issue in the same run. The prompt
-    // already relabeled it needs-triage (or it died without a signal — flag it).
+    // already relabeled BLOCKED issues; crashes and silent deaths land here too.
     console.log(`[ralph] #${issue.number} did not complete; skipping for tonight`);
     execSync(
       `gh issue edit ${issue.number} --remove-label "${READY_LABEL}" --add-label "needs-triage"`,
@@ -76,6 +89,9 @@ import { run, claudeCode } from "@ai-hero/sandcastle";
 import { docker } from "@ai-hero/sandcastle/sandboxes/docker";
 import { execSync } from "node:child_process";
 
+// Host-side gh/tracker calls need the tokens from .sandcastle/.env too.
+process.loadEnvFile(".sandcastle/.env");
+
 const READY_LABEL = "ready-for-agent";
 const CONCURRENCY = 3;
 const MAX_ISSUES_PER_NIGHT = 10;
@@ -92,17 +108,24 @@ const queue: Issue[] = JSON.parse(
 
 async function work(issue: Issue) {
   console.log(`[ralph] picking up #${issue.number}: ${issue.title}`);
-  const result = await run({
-    agent: claudeCode("claude-opus-4-8", { effort: "high" }),
-    sandbox: docker({ imageName: "sandcastle:local" }),
-    promptFile: ".sandcastle/prompt.md",
-    promptArgs: { ISSUE_NUMBER: String(issue.number) },
-    maxIterations: MAX_ITERATIONS_PER_ISSUE,
-    branchStrategy: { type: "branch", branch: `agent/issue-${issue.number}` },
-    completionSignal: ["<promise>COMPLETE</promise>", "<promise>BLOCKED</promise>"],
-    logging: { type: "file", path: `.sandcastle/logs/issue-${issue.number}.log` },
-  });
-  const ok = result.completionSignal === "<promise>COMPLETE</promise>";
+  let ok = false;
+  try {
+    const result = await run({
+      agent: claudeCode("claude-opus-4-8", { effort: "high" }),
+      sandbox: docker({ imageName: "sandcastle:local" }),
+      promptFile: ".sandcastle/prompt.md",
+      promptArgs: { ISSUE_NUMBER: String(issue.number) },
+      maxIterations: MAX_ITERATIONS_PER_ISSUE,
+      branchStrategy: { type: "branch", branch: `agent/issue-${issue.number}` },
+      completionSignal: ["<promise>COMPLETE</promise>", "<promise>BLOCKED</promise>"],
+      logging: { type: "file", path: `.sandcastle/logs/issue-${issue.number}.log` },
+    });
+    ok = result.completionSignal === "<promise>COMPLETE</promise>";
+  } catch (err) {
+    // A crashed sandbox is a failed attempt, not a silent skip — fall through
+    // to the relabel below so the morning report tells the truth.
+    console.error(`[ralph] #${issue.number} crashed:`, err);
+  }
   if (!ok) {
     execSync(
       `gh issue edit ${issue.number} --remove-label "${READY_LABEL}" --add-label "needs-triage"`,
