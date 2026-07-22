@@ -101,6 +101,7 @@ For `/afk dry-run`, print this report without launching.
 
 When the user returns, point them at:
 
+- **The night report** — the loop files one "AFK night report" issue summarizing every attempt (landed / did not land, with pointers). It's created unlabeled on purpose, so it surfaces in `/triage`'s unlabeled bucket. Start there.
 - **Main** — every landed issue is already merged and pushed (`land agent/issue-<n>` merge commits), its issue closed with a summary comment. `git log origin/main` is the night's ledger.
 - **Continuations** — work that didn't converge was handed to a fresh session via `[continuation]` issues; any still open show what's mid-flight or awaiting the next run.
 - **Failures** — issues the loop gave up on (including failed continuations) are relabeled `needs-triage` with a comment explaining the blocker; they'll surface next `/triage`.
