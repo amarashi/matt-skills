@@ -144,16 +144,35 @@ async function judgeEffort(issue: Issue): Promise<Tier> {
   return "standard";
 }
 
-type Issue = { number: number; title: string; labels: string[] };
+type Issue = { number: number; title: string; labels: string[]; body: string };
 
 const readyIssues = (): Issue[] =>
   JSON.parse(
-    sh(`gh issue list --label "${READY_LABEL}" --state open --json number,title,labels --limit 100`),
+    sh(`gh issue list --label "${READY_LABEL}" --state open --json number,title,labels,body --limit 100`),
   ).map((i: any) => ({
     number: i.number,
     title: i.title,
     labels: (i.labels ?? []).map((l: any) => l.name),
+    body: i.body ?? "",
   }));
+
+// Dependency-aware pick: /to-issues writes a "## Blocked by" section into
+// every issue. Never hand an agent a ticket whose prerequisite hasn't
+// landed — it would build against code that doesn't exist yet.
+const blockersOf = (i: Issue): number[] => {
+  const section = i.body.split(/##\s*Blocked by/i)[1]?.split(/\n##\s/)[0] ?? "";
+  return [...section.matchAll(/#(\d+)/g)].map((m) => Number(m[1]));
+};
+
+const stateCache = new Map<number, string>();
+const isClosed = (n: number) => {
+  if (!stateCache.has(n)) {
+    try { stateCache.set(n, JSON.parse(sh(`gh issue view ${n} --json state`)).state); }
+    catch { stateCache.set(n, "OPEN"); } // unknown → assume it still blocks
+  }
+  return stateCache.get(n) === "CLOSED";
+};
+const unblocked = (i: Issue) => blockersOf(i).every(isClosed);
 
 // Implement, then independently review, inside one warm sandbox.
 // True only when a reviewer with fresh context approved a fully green branch.
@@ -256,8 +275,9 @@ const attempted = new Set<number>();
 let landed = 0;
 
 while (attempted.size < MAX_ISSUES_PER_NIGHT) {
-  const issue = readyIssues().find((i) => !attempted.has(i.number));
-  if (!issue) break; // queue drained — the only happy exit
+  stateCache.clear(); // issues close as the night progresses
+  const issue = readyIssues().find((i) => !attempted.has(i.number) && unblocked(i));
+  if (!issue) break; // queue drained or fully blocked — the only happy exit
   attempted.add(issue.number);
   console.log(`[ralph] picking up #${issue.number}: ${issue.title}`);
 
@@ -286,8 +306,9 @@ const attempted = new Set<number>();
 let landed = 0;
 
 while (attempted.size < MAX_ISSUES_PER_NIGHT) {
+  stateCache.clear(); // blockers may have landed in the previous wave
   const wave = readyIssues()
-    .filter((i) => !attempted.has(i.number))
+    .filter((i) => !attempted.has(i.number) && unblocked(i))
     .slice(0, Math.min(CONCURRENCY, MAX_ISSUES_PER_NIGHT - attempted.size));
   if (!wave.length) break;
   wave.forEach((i) => attempted.add(i.number));
