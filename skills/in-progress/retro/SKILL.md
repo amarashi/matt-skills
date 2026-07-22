@@ -25,7 +25,7 @@ One bad night is noise. Look for things that happened **two or more times**:
 
 - **Recurring reviewer findings** — the same category of `CHANGES` verdict across different issues (missed migrations, untested error paths, style the repo cares about). Each recurring finding is a sentence missing from `prompt.md`.
 - **Recurring blockers** — `BLOCKED` signals citing the same missing context (unclear glossary term, undocumented invariant). Each is a gap in `CONTEXT.md`, an ADR, or the agent-brief conventions.
-- **Tier miscalibration** — `effort:light` tickets that needed multiple review rounds or ended in continuations (sizing runs too low), or `deep` tickets that sailed through in one round (money burned). Compare the dispatcher's judgments against outcomes too.
+- **Tier miscalibration** — `effort:light` tickets that needed multiple review rounds or ended in continuations (sizing runs too low), or `deep` tickets that sailed through in one round (money burned). Include labels applied by agents on their own filed issues.
 - **Mechanical failures** — rebase conflicts clustering in one subsystem (slices too entangled — feed back to `/to-issues` granularity), CI rejections after sandbox green (env drift between Dockerfile and CI), reverts on main (the most serious signal there is; diagnose individually).
 
 ### 2. Propose fixes at the right layer
@@ -35,7 +35,7 @@ One bad night is noise. Look for things that happened **two or more times**:
 | Reviewer keeps finding X | `.sandcastle/prompt.md` (implementer discipline) |
 | Reviewer keeps *missing* X (found later by CI/human) | `.sandcastle/review.md` (checklist item) |
 | Agents keep misunderstanding a term or invariant | `CONTEXT.md` / new ADR |
-| Sizing repeatedly wrong in one direction | Effort-label guidance in the triage-labels doc; dispatcher system prompt |
+| Sizing repeatedly wrong in one direction | Effort-label guidance in the triage-labels doc |
 | Slices keep colliding | Note for `/to-issues` granularity in its issue template usage |
 
 Keep each fix one sentence where possible — prompts grow stale and bloated fast, and a retro that doubles the prompt every week is making the system worse. Prefer replacing a weak sentence over adding a new one.
