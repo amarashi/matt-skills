@@ -7,6 +7,7 @@ Templates for the files `/afk` generates into `.sandcastle/`. Adapt before writi
 - Keep the structure: fetch queue → fresh agent per issue → tracker is the only state carried between iterations.
 - Both templates load `.sandcastle/.env` into the host process first: the tracker CLI calls (`gh issue list`/`edit`) run **host-side** via `execSync`, so a `GH_TOKEN` that lives only in `.sandcastle/.env` is invisible to them without this. (Sandcastle handles the sandbox's env itself.) `process.loadEnvFile` needs Node 20.12+; on older Node, inline a five-line parser instead.
 - The orchestration script must be launched from a clean checkout of the default branch — merges land on whatever branch the host is on.
+- If the user wants agents routed through OpenRouter (or named a non-Anthropic model), set `MODEL` to the OpenRouter slug they chose — different slugs per role are fine too (e.g. a cheaper model for the implementer, a stronger one for the reviewer, by splitting `agent()` into `implementer()`/`reviewer()`).
 
 ## The per-issue pipeline (shared by both templates)
 
@@ -32,7 +33,24 @@ const MAX_ISSUES_PER_NIGHT = 10;
 const MAX_IMPL_ITERATIONS = 10; // "keep working until green" budget per pass
 const MAX_REVIEW_ROUNDS = 3;
 
-const agent = () => claudeCode("claude-opus-4-8", { effort: "high" });
+// Model routing: direct Anthropic by default; through OpenRouter when
+// OPENROUTER_API_KEY is set in .sandcastle/.env. OpenRouter speaks the
+// Anthropic Messages protocol at /api, so the sandboxed Claude Code works
+// unchanged — only the base URL, auth token, and model slug differ. The
+// blank ANTHROPIC_API_KEY is deliberate: it forces the auth-token path.
+const OPENROUTER = !!process.env.OPENROUTER_API_KEY;
+const MODEL = OPENROUTER ? "anthropic/claude-opus-4.8" : "claude-opus-4-8"; // any OpenRouter slug works
+const agent = () =>
+  claudeCode(MODEL, {
+    effort: "high",
+    ...(OPENROUTER && {
+      env: {
+        ANTHROPIC_BASE_URL: "https://openrouter.ai/api",
+        ANTHROPIC_AUTH_TOKEN: process.env.OPENROUTER_API_KEY!,
+        ANTHROPIC_API_KEY: "",
+      },
+    }),
+  });
 const sh = (cmd: string) => execSync(cmd, { encoding: "utf8" });
 
 type Issue = { number: number; title: string };

@@ -56,7 +56,9 @@ If `.sandcastle/` already exists, leave the user's `Dockerfile` and `.env` alone
 
 Verify `.sandcastle/.env` contains:
 
-- `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` — for the agent inside the sandbox.
+- **Model access**, one of:
+  - `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` — agents talk to Anthropic directly (default), or
+  - `OPENROUTER_API_KEY` — agents are routed through [OpenRouter](https://openrouter.ai), which speaks the Anthropic Messages protocol, so any OpenRouter model slug can power the agents (see the routing block in [RALPH-LOOP.md](RALPH-LOOP.md)). If both are present, OpenRouter wins unless the user says otherwise.
 - A tracker token if the tracker CLI needs one inside the sandbox (e.g. `GH_TOKEN`).
 
 If anything is missing, **stop and tell the user exactly which variable to add to `.sandcastle/.env`**, then have them re-invoke `/afk`. Never generate, guess, echo, or commit token values, and confirm `.env` is git-ignored (the scaffold's `.gitignore` handles this — verify it survived).
@@ -73,7 +75,9 @@ Write three files from the templates in [RALPH-LOOP.md](RALPH-LOOP.md), substitu
 
 The launch must start from a clean checkout of the default branch — merges land on whatever branch the host is on.
 
-Show the user a one-paragraph summary of what was generated (mode, cap, branch naming, review rounds) before launching — unless they invoked with arguments that already pin these down.
+**Model routing:** the generated `agent()` helper defaults to Anthropic directly, and flips to OpenRouter automatically when `OPENROUTER_API_KEY` is set. If the user names a model (`/afk model=qwen/qwen3-coder`, "use DeepSeek for the implementer"), set the `MODEL` slug(s) accordingly — including split implementer/reviewer models.
+
+Show the user a one-paragraph summary of what was generated (mode, cap, branch naming, review rounds, model routing) before launching — unless they invoked with arguments that already pin these down.
 
 ### 5. Launch
 
