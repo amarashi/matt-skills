@@ -80,6 +80,8 @@ Write three files from the templates in [RALPH-LOOP.md](RALPH-LOOP.md), substitu
 
 The launch must start from a clean checkout of the default branch — merges land on whatever branch the host is on.
 
+When generating, substitute `VERIFY_CMD` with the repo's real test command (found in `package.json`/CI config) so every merged tree is re-verified host-side before pushing; leave it empty only if the host genuinely can't run the suite, and say so in the launch summary.
+
 **Model routing:** the generated `agent()` helper defaults to Anthropic directly, flips to OpenRouter when `OPENROUTER_API_KEY` is set, and to local Ollama when `OLLAMA_MODEL` is set. If the user names a model (`/afk model=qwen/qwen3-coder`, "implement locally, review with Opus"), set the model slug(s) accordingly — split implementer/reviewer providers are encouraged: a local implementer with a cloud reviewer keeps the merge gate strong while the token-heavy work runs free.
 
 **Effort dispatch:** each ticket's implementer runs on the smallest model tier that can handle it (`light` / `standard` / `deep`, mapped per provider in the `MODELS` table). The tier is resolved in order: an `effort:*` label on the issue (applied at `/triage` or `/to-issues`, where the ticket was already read and judged) → a one-call dispatcher on the light-tier model sizing the ticket at runtime → `standard` as the fail-safe. The **reviewer always runs the deep tier** regardless of the implementer's — it is the last gate before main, and skimping there is where autonomous merging goes wrong.

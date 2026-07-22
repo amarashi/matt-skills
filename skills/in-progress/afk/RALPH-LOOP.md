@@ -24,8 +24,8 @@ Shared helpers (include in the generated `main.ts`):
 ```ts
 import { claudeCode, createSandbox } from "@ai-hero/sandcastle";
 import { docker } from "@ai-hero/sandcastle/sandboxes/docker";
-import { execSync } from "node:child_process";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { execFileSync, execSync } from "node:child_process";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 
 // Host-side gh/tracker calls need the tokens from .sandcastle/.env too.
 process.loadEnvFile(".sandcastle/.env");
@@ -38,8 +38,15 @@ const MAX_REVIEW_ROUNDS = 3;
 // Night budget: a hard wall-clock deadline, and a kill switch —
 // `touch .sandcastle/STOP` finishes the in-flight issue, then stops
 // cleanly (report still files). `kill <pid>` remains the hard stop.
+rmSync(".sandcastle/STOP", { force: true }); // last night's marker must not silently no-op tonight
 const NIGHT_DEADLINE = Date.now() + 8 * 3600_000;
 const keepGoing = () => Date.now() < NIGHT_DEADLINE && !existsSync(".sandcastle/STOP");
+
+// Substituted at generation time with the repo's real test command ("" to
+// disable). Runs host-side on the freshly merged tree before pushing — the
+// only gate that sees the exact code main will contain, and the backstop
+// against semantic drift between parallel branches in repos without CI.
+const VERIFY_CMD = "npm test";
 
 // Model routing: direct Anthropic by default; through OpenRouter when
 // OPENROUTER_API_KEY is set; local Ollama when OLLAMA_MODEL is set (Ollama
@@ -92,6 +99,12 @@ const agent = (tier: Tier) =>
   claudeCode(MODELS[tier], { effort: tier === "deep" ? "high" : "medium", ...routedEnv });
 
 const sh = (cmd: string) => execSync(cmd, { encoding: "utf8" });
+
+// External text (issue titles, bodies) must never pass through a shell — a
+// crafted ticket would otherwise execute on the host, which holds repo and
+// tracker credentials. Anything that interpolates tracker data uses gh(),
+// which passes real argv entries and never invokes a shell.
+const gh = (...args: string[]) => execFileSync("gh", args, { encoding: "utf8" });
 
 const MAIN_BRANCH = sh(`git branch --show-current`).trim();
 
@@ -217,7 +230,7 @@ async function implementAndReview(issue: Issue): Promise<boolean> {
     const review = await sandbox.run({
       agent: agent("deep"), // the merge gate always runs the strongest tier
       promptFile: ".sandcastle/review.md",
-      promptArgs: { ISSUE_NUMBER: String(issue.number) },
+      promptArgs: { ISSUE_NUMBER: String(issue.number), MAIN_BRANCH },
       completionSignal: ["<verdict>APPROVED</verdict>", "<verdict>CHANGES</verdict>"],
       logging: { type: "file", path: `.sandcastle/logs/issue-${issue.number}-review-${round}.log` },
     });
@@ -226,7 +239,7 @@ async function implementAndReview(issue: Issue): Promise<boolean> {
     const fix = await sandbox.run({
       agent: agent(tier),
       prompt:
-        "Address every finding in REVIEW.md. Keep the full test suite green. Commit, then reply <promise>COMPLETE</promise> — or <promise>BLOCKED</promise> if a finding cannot be resolved.",
+        "Address every finding in REVIEW.md, then delete REVIEW.md — it is loop bookkeeping and must never merge. Keep the full test suite green. Commit, then reply <promise>COMPLETE</promise> — or <promise>BLOCKED</promise> if a finding cannot be resolved.",
       maxIterations: MAX_IMPL_ITERATIONS,
       completionSignal: ["<promise>COMPLETE</promise>", "<promise>BLOCKED</promise>"],
       logging: { type: "file", path: `.sandcastle/logs/issue-${issue.number}-fix-${round}.log` },
@@ -252,6 +265,19 @@ async function mergeAndClose(issue: Issue): Promise<boolean> {
       }
     }
     sh(`git merge --no-ff ${branch} -m "land ${branch} (#${issue.number})"`);
+    if (VERIFY_CMD) {
+      // Re-verify the exact merged tree before it leaves the machine.
+      // Earlier gates ran against the pre-merge base; in parallel mode that
+      // base may have moved as wave-mates landed, and two individually green
+      // branches can be semantically incompatible without conflicting.
+      try {
+        sh(VERIFY_CMD);
+      } catch {
+        sh(`git reset --hard ORIG_HEAD`);
+        console.error(`[ralph] #${issue.number}: merged tree failed verification; merge unwound`);
+        return false;
+      }
+    }
     sh(`git push origin HEAD`);
     if (HAS_CI && !(await waitForCi(MAIN_BRANCH))) {
       sh(`git revert -m 1 --no-edit HEAD`);
@@ -259,8 +285,10 @@ async function mergeAndClose(issue: Issue): Promise<boolean> {
       console.error(`[ralph] #${issue.number} reverted: main CI went red after landing`);
       return false;
     }
-    sh(
-      `gh issue close ${issue.number} --comment "> *This was done by an AI agent working AFK.* Implemented on \\`${branch}\\`, independently reviewed, full suite green${HAS_CI ? ", CI green" : ""}, merged to main."`,
+    gh(
+      "issue", "close", String(issue.number),
+      "--comment",
+      `> *This was done by an AI agent working AFK.* Implemented on \`${branch}\`, independently reviewed, full suite green${HAS_CI ? ", CI green" : ""}, merged to ${MAIN_BRANCH}.`,
     );
     console.log(`[ralph] #${issue.number} landed on main`);
     return true;
@@ -300,10 +328,18 @@ function fileNightReport(landed: number, attempted: number) {
 function handleFailure(issue: Issue) {
   const branch = `agent/issue-${issue.number}`;
   console.log(`[ralph] #${issue.number} did not land; handing off`);
-  sh(`gh issue edit ${issue.number} --remove-label "${READY_LABEL}" --add-label "needs-triage"`);
+  gh("issue", "edit", String(issue.number), "--remove-label", READY_LABEL, "--add-label", "needs-triage");
   if (issue.title.startsWith("[continuation]")) return;
-  sh(
-    `gh issue create --title "[continuation] ${issue.title}" --label "${READY_LABEL}" --body "> *This was created by an AI agent working AFK.*\n\nContinuation of #${issue.number}. A prior AFK attempt left work on branch \\`${branch}\\` — read that issue, its comments, and the branch diff before starting. Finish the work until the full test suite is green, then emit the completion signal."`,
+  gh(
+    "issue", "create",
+    "--title", `[continuation] ${issue.title}`, // untrusted text — argv only, never a shell string
+    "--label", READY_LABEL,
+    "--body",
+    [
+      "> *This was created by an AI agent working AFK.*",
+      "",
+      `Continuation of #${issue.number}. A prior AFK attempt left work on branch \`${branch}\` — read that issue, its comments, and the branch diff before starting. Finish the work until the full test suite is green, then emit the completion signal.`,
+    ].join("\n"),
   );
 }
 ```
@@ -346,7 +382,7 @@ console.log(`[ralph] night shift over: ${landed} landed on main, ${attempted.siz
 
 ## `.sandcastle/main.ts` — parallel (`/afk parallel`)
 
-Waves of concurrent pipelines, each on its own branch (mandatory — concurrent sandboxes sharing a branch corrupt each other). Implement-and-review runs concurrently; **merges happen after the wave, one at a time**. The queue is re-queried between waves, so continuations join later waves. Parallel branches merge against a main that moved beneath them, so conflicts are more likely — a conflicted merge falls through to `handleFailure`, and its continuation issue lands the rebase in a later session.
+Waves of concurrent pipelines, each on its own branch (mandatory — concurrent sandboxes sharing a branch corrupt each other). Implement-and-review runs concurrently; **merges happen after the wave, one at a time**. The queue is re-queried between waves, so continuations join later waves. Parallel branches merge against a main that moved beneath them, so conflicts are more likely — a conflicted merge falls through to `handleFailure`, and its continuation issue lands the rebase in a later session. Semantic drift (two green branches that merge cleanly but break each other) is caught by the `VERIFY_CMD` run on each merged tree before pushing, and by CI-on-main with auto-revert where CI exists.
 
 ```ts
 const CONCURRENCY = 3;
@@ -432,16 +468,16 @@ You are an unattended code reviewer. Your verdict decides whether this branch me
 
 # The diff under review
 
-!`git diff main...HEAD --stat`
+!`git diff {{MAIN_BRANCH}}...HEAD --stat`
 
 # Process
 
-1. Read the agent brief (the contract) and the full diff (`git diff main...HEAD`).
+1. Read the agent brief (the contract) and the full diff (`git diff {{MAIN_BRANCH}}...HEAD`).
 2. Re-run the full test suite and the typechecker yourself. Do not trust the implementer's claim.
 3. Check, in order: does the diff do what the brief says (no more, no less)? Did it touch a **protected path** (`.github/workflows/`, CI/deploy config, secrets, database migrations) without the brief explicitly authorizing it — automatic `CHANGES` if so, no matter how reasonable it looks. Is anything broken or unsafe (bugs, security, data loss, missing error handling)? Do the tests actually test the new behavior, not implementation details?
 4. Trivial mechanical fixes (typos, a missed lint) you may make and commit directly.
 5. Verdict:
-   - Everything holds → end your reply with exactly: `<verdict>APPROVED</verdict>`
+   - Everything holds → if a `REVIEW.md` from an earlier round still exists, delete it and commit the deletion (it is loop bookkeeping and must never merge), then end your reply with exactly: `<verdict>APPROVED</verdict>`
    - Anything of substance fails → write every finding to a `REVIEW.md` file at the repo root (numbered, each with file/line and what "fixed" looks like), commit it, and end your reply with exactly: `<verdict>CHANGES</verdict>`
 
 Never approve out of politeness or because the work is "close". An unfixable-in-place problem is a `CHANGES` verdict with a finding saying so — the loop will route it to a fresh session.
