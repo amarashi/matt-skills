@@ -1,12 +1,12 @@
 ---
 name: afk
-description: Launch an AFK night shift — a Ralph loop of sandboxed Sandcastle agents that drains the ready-for-agent queue with one command.
+description: Launch an AFK night shift — a Ralph loop of sandboxed Sandcastle agents that drains the ready-for-agent queue and lands double-green work straight on main.
 disable-model-invocation: true
 ---
 
 # AFK
 
-Turn the `ready-for-agent` queue into shipped branches while the user is away, with a single invocation. This skill combines two pieces:
+Turn the `ready-for-agent` queue into merged commits on main while the user is away, with a single invocation. Each issue runs a fully unattended pipeline — **implement → independent review → merge → close** — and only lands when it is *double green*: the implementer's full test suite passes AND a reviewer agent with fresh context approves. Work that can't converge is handed to a fresh session via a `[continuation]` issue instead of waiting for a human. This skill combines two pieces:
 
 - **The Ralph technique** — a dumb outer loop that starts a *fresh* agent for each unit of work, with all state living outside the agent (here: the issue tracker and git). No context carries over between iterations; the tracker is the memory.
 - **[Sandcastle](https://github.com/mattpocock/sandcastle)** (`@ai-hero/sandcastle`) — runs each agent in an isolated Docker/Podman sandbox on its own branch and manages the worktrees and commits.
@@ -15,7 +15,7 @@ The user should never have to hand-configure Sandcastle. `/afk` does the preflig
 
 ## Reference docs
 
-- [RALPH-LOOP.md](RALPH-LOOP.md) — templates for the orchestration script (`main.ts`, sequential and parallel) and the per-issue agent prompt (`prompt.md`)
+- [RALPH-LOOP.md](RALPH-LOOP.md) — templates for the orchestration script (`main.ts`, sequential and parallel), the implementer prompt (`prompt.md`), and the independent reviewer prompt (`review.md`)
 
 ## Preconditions
 
@@ -65,12 +65,15 @@ This is the single one-time manual step. Every later `/afk` run sails through th
 
 ### 4. Generate the loop
 
-Write two files from the templates in [RALPH-LOOP.md](RALPH-LOOP.md), substituting the repo's actual label strings and tracker CLI commands:
+Write three files from the templates in [RALPH-LOOP.md](RALPH-LOOP.md), substituting the repo's actual label strings and tracker CLI commands:
 
-- `.sandcastle/main.ts` — the Ralph loop. Sequential template by default; parallel template for `/afk parallel`.
-- `.sandcastle/prompt.md` — the per-issue prompt each sandboxed agent receives. It must be **self-contained** (the sandbox agent does not have this skills repo): the issue's agent brief is the contract, TDD where possible, typecheck and single test files regularly, full suite once at the end, commit to the current branch, update the issue label, emit the completion signal.
+- `.sandcastle/main.ts` — the Ralph loop running the per-issue pipeline (implement → review → merge → close). Sequential template by default; parallel template for `/afk parallel`.
+- `.sandcastle/prompt.md` — the implementer prompt. It must be **self-contained** (the sandbox agent does not have this skills repo): the issue's agent brief is the contract, TDD where possible, keep working until the full suite is green, file out-of-scope discoveries as new `ready-for-agent` issues, emit the completion signal only when earned.
+- `.sandcastle/review.md` — the independent reviewer prompt: fresh context, re-runs the suite itself, checks the diff against the brief, approves or writes findings to `REVIEW.md` for a fix round.
 
-Show the user a one-paragraph summary of what was generated (mode, cap, branch naming, max issues) before launching — unless they invoked with arguments that already pin these down.
+The launch must start from a clean checkout of the default branch — merges land on whatever branch the host is on.
+
+Show the user a one-paragraph summary of what was generated (mode, cap, branch naming, review rounds) before launching — unless they invoked with arguments that already pin these down.
 
 ### 5. Launch
 
@@ -87,13 +90,15 @@ For `/afk dry-run`, print this report without launching.
 
 When the user returns, point them at:
 
-- **Branches** — one `agent/issue-<n>` branch per attempted issue; each successful issue's label moved from `ready-for-agent` to `ready-for-human` (per the triage state machine, that means: ready for a human to review and merge).
-- **Failures** — issues the loop gave up on are relabeled `needs-triage` with a comment explaining the blocker; they'll surface next `/triage`.
-- **Logs** — `.sandcastle/logs/issue-<n>.log` per issue.
+- **Main** — every landed issue is already merged and pushed (`land agent/issue-<n>` merge commits), its issue closed with a summary comment. `git log origin/main` is the night's ledger.
+- **Continuations** — work that didn't converge was handed to a fresh session via `[continuation]` issues; any still open show what's mid-flight or awaiting the next run.
+- **Failures** — issues the loop gave up on (including failed continuations) are relabeled `needs-triage` with a comment explaining the blocker; they'll surface next `/triage`.
+- **Logs** — `.sandcastle/logs/issue-<n>*.log` per issue: implementation, each review round, each fix round.
 
 ## Guardrails
 
 - **Sandbox always.** Never substitute `noSandbox()`. If Docker/Podman is unavailable, stop.
-- **Branch per issue, never head.** All runs use `branchStrategy: { type: "branch", ... }`. Parallel runs on a shared branch corrupt each other; merging to head unattended is not this skill's call to make.
-- **Bounded loop.** The generated `main.ts` caps total issues per night and never retries a failed issue in the same run — a failed issue is relabeled and skipped, Ralph-style, so one poisoned issue can't burn the night's budget.
-- **Merging is human work.** The loop stops at `ready-for-human`. It never merges, never pushes to the default branch, never closes issues it didn't fully verify.
+- **Branch per issue, never head.** Every pipeline runs on its own `agent/issue-<n>` branch; only the serialized host-side merge step touches main.
+- **Merge on double green only.** A branch lands only when the implementer's full suite is green AND an independent fresh-context reviewer approved. Merges are serialized and never forced; a conflicted merge is aborted and routed to a continuation issue, not resolved blind.
+- **Bounded loop.** The generated `main.ts` caps total issues per night and never retries a failed issue in the same run. Continuation issues count toward the cap and never chain — a failed continuation goes to `needs-triage`, not to a third session.
+- **Closing is earned.** An issue is closed only after its branch is merged and pushed. Everything else stays open and labeled truthfully.
