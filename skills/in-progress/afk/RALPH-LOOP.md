@@ -14,7 +14,7 @@ Templates for the files `/afk` generates into `.sandcastle/`. Adapt before writi
 
 Each issue goes through **implement → independent review → merge → close**, fully unattended:
 
-1. **Size, then implement** in a warm sandbox on `agent/issue-<n>`: the ticket's effort tier (label, or dispatcher judgment) picks the implementer's model, and it iterates until the full test suite is green (`<promise>COMPLETE</promise>`).
+1. **Size, then implement** in a warm sandbox on `agent/issue-<n>`: the ticket's effort tier (its `effort:*` label, else `standard`) picks the implementer's model, and it iterates until the full test suite is green (`<promise>COMPLETE</promise>`).
 2. **Rebase, then review**: the branch is rebased onto the current main first (a conflict is a normal failure, routed onward), so the verdict is about the code that will actually land. Then an independent reviewer agent in the *same sandbox but a fresh context* diffs the branch against main, re-runs the suite, and either approves or writes findings to `REVIEW.md`. Change requests loop back to an implementer pass, up to `MAX_REVIEW_ROUNDS`.
 3. **Merge on double green only — triple when the repo has CI.** Implementer `COMPLETE` *and* reviewer `<verdict>APPROVED</verdict>`; if CI exists, the branch is pushed and must go CI-green before merging, and main is watched after the merge — a red main auto-reverts the landing (clean, since each landing is one `--no-ff` merge commit). Merges are the only cross-issue mutation, so they are always serialized, even in the parallel template.
 4. **Failure at any stage** (blocked, non-converging, crash, merge conflict): the issue is relabeled `needs-triage`, and — unless it is already a continuation — a fresh `[continuation]` issue is filed with `ready-for-agent`, pointing at the branch, so a **new session picks the work up** (tonight if budget remains, since the queue is re-queried each round). A continuation that fails again goes back to the human queue instead of spawning a chain.
@@ -63,11 +63,12 @@ const OPENROUTER = !OLLAMA && !!process.env.OPENROUTER_API_KEY;
 const OLLAMA_URL = process.env.OLLAMA_URL ?? "http://host.docker.internal:11434";
 
 // Effort tiers: each ticket runs on the smallest model that can handle it.
-// The tier comes from an effort:* label (set at triage), else the dispatcher
-// below judges it. Reviewer always runs the deep tier — it guards main.
+// The tier comes from the ticket's effort:* label (set wherever the ticket
+// was born); unlabeled falls back to standard. Reviewer always runs the deep
+// tier — it guards main.
 type Tier = "light" | "standard" | "deep";
 const MODELS: Record<Tier, string> = OLLAMA
-  ? { light: OLLAMA, standard: OLLAMA, deep: process.env.OLLAMA_MODEL_DEEP ?? OLLAMA }
+  ? { light: OLLAMA, standard: OLLAMA, deep: OLLAMA }
   : OPENROUTER
     ? { light: "anthropic/claude-haiku-4.5", standard: "anthropic/claude-sonnet-5", deep: "anthropic/claude-opus-4.8" }
     : { light: "claude-haiku-4-5", standard: "claude-sonnet-5", deep: "claude-opus-4-8" };
@@ -127,42 +128,15 @@ async function waitForCi(branch: string): Promise<boolean> {
   return false; // never finished — fail safe
 }
 
-// Dispatcher: sizes an unlabeled ticket with one cheap light-tier call.
-// All three providers speak the Messages API; both auth headers are sent
-// and each server reads the one it wants. Fails safe to "standard".
-// (Anthropic-direct with only an OAuth token has no API key for raw fetch —
-// the catch handles that; label your tickets or use OpenRouter/Ollama.)
-const API_URL = OLLAMA ? OLLAMA_URL : OPENROUTER ? "https://openrouter.ai/api" : "https://api.anthropic.com";
-const API_KEY = OPENROUTER ? process.env.OPENROUTER_API_KEY! : process.env.ANTHROPIC_API_KEY ?? "ollama";
-
-async function judgeEffort(issue: Issue): Promise<Tier> {
+// Effort tier from the ticket's effort:* label. Tickets are sized where
+// they are born — at /triage, /to-issues, or by the implementer that files
+// a scope-discovery issue (see prompt.md). An unlabeled ticket is therefore
+// a continuation or a hand-filed one, and "standard" is the right default
+// for both ("finish the work" is standard-shaped).
+const judgeEffort = (issue: Issue): Tier => {
   const labeled = issue.labels.find((l) => l.startsWith("effort:"))?.slice(7);
-  if (labeled === "light" || labeled === "standard" || labeled === "deep") return labeled;
-  try {
-    const ticket = sh(`gh issue view ${issue.number} --json title,body`);
-    const res = await fetch(`${API_URL}/v1/messages`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "anthropic-version": "2023-06-01",
-        "x-api-key": API_KEY,
-        authorization: `Bearer ${API_KEY}`,
-      },
-      body: JSON.stringify({
-        model: MODELS.light,
-        max_tokens: 10,
-        system:
-          "You size engineering tickets by the model capability they need. Reply with exactly one word: light (mechanical, few-file change), standard (typical feature slice), or deep (cross-cutting, tricky logic, architecture, or vague spec). When unsure, pick the higher tier.",
-        messages: [{ role: "user", content: ticket }],
-      }),
-    });
-    const word = (await res.json()).content?.[0]?.text?.trim().toLowerCase();
-    if (word === "light" || word === "standard" || word === "deep") return word;
-  } catch (err) {
-    console.error(`[ralph] dispatcher failed for #${issue.number}:`, err);
-  }
-  return "standard";
-}
+  return labeled === "light" || labeled === "deep" ? labeled : "standard";
+};
 
 type Issue = { number: number; title: string; labels: string[]; body: string };
 
@@ -184,20 +158,16 @@ const blockersOf = (i: Issue): number[] => {
   return [...section.matchAll(/#(\d+)/g)].map((m) => Number(m[1]));
 };
 
-const stateCache = new Map<number, string>();
 const isClosed = (n: number) => {
-  if (!stateCache.has(n)) {
-    try { stateCache.set(n, JSON.parse(sh(`gh issue view ${n} --json state`)).state); }
-    catch { stateCache.set(n, "OPEN"); } // unknown → assume it still blocks
-  }
-  return stateCache.get(n) === "CLOSED";
+  try { return JSON.parse(sh(`gh issue view ${n} --json state`)).state === "CLOSED"; }
+  catch { return false; } // unknown → assume it still blocks
 };
 const unblocked = (i: Issue) => blockersOf(i).every(isClosed);
 
 // Implement, then independently review, inside one warm sandbox.
 // True only when a reviewer with fresh context approved a fully green branch.
 async function implementAndReview(issue: Issue): Promise<boolean> {
-  const tier = await judgeEffort(issue);
+  const tier = judgeEffort(issue);
   console.log(`[ralph] #${issue.number} sized ${tier} → ${MODELS[tier]}`);
   await using sandbox = await createSandbox({
     branch: `agent/issue-${issue.number}`,
@@ -353,7 +323,6 @@ const attempted = new Set<number>();
 let landed = 0;
 
 while (attempted.size < MAX_ISSUES_PER_NIGHT && keepGoing()) {
-  stateCache.clear(); // issues close as the night progresses
   const issue = readyIssues().find((i) => !attempted.has(i.number) && unblocked(i));
   if (!issue) break; // queue drained or fully blocked — the only happy exit
   attempted.add(issue.number);
@@ -390,7 +359,6 @@ const attempted = new Set<number>();
 let landed = 0;
 
 while (attempted.size < MAX_ISSUES_PER_NIGHT && keepGoing()) {
-  stateCache.clear(); // blockers may have landed in the previous wave
   const wave = readyIssues()
     .filter((i) => !attempted.has(i.number) && unblocked(i))
     .slice(0, Math.min(CONCURRENCY, MAX_ISSUES_PER_NIGHT - attempted.size));
@@ -443,7 +411,7 @@ The most recent **Agent Brief** comment above is the authoritative specification
 2. Work test-first where a seam allows it: failing test, implementation, green.
 3. Run the typechecker and the relevant single test files regularly; run the full test suite once at the end. All must pass — if they don't, keep working until they do.
 4. Commit to the current branch as you go, with clear messages referencing #{{ISSUE_NUMBER}}. Do not switch branches. Do not merge. Do not push.
-5. If you discover necessary work that is beyond this issue's scope, do NOT expand scope. File it: `gh issue create --title "..." --label "ready-for-agent"` with a full brief in the body (what to build, acceptance criteria, `Blocked by: #{{ISSUE_NUMBER}}` if applicable). Another agent in another session will pick it up.
+5. If you discover necessary work that is beyond this issue's scope, do NOT expand scope. File it: `gh issue create --title "..." --label "ready-for-agent" --label "effort:<tier>"` with a full brief in the body (what to build, acceptance criteria, `Blocked by: #{{ISSUE_NUMBER}}` if applicable). Size `<tier>` yourself — `light` (mechanical, few-file), `standard` (typical slice), or `deep` (cross-cutting, tricky, or vague spec); when unsure pick the higher tier. Another agent in another session will pick it up.
 6. **Protected paths.** Do not touch `.github/workflows/`, CI/CD or deploy configuration, secret or credential files, or database migrations unless the agent brief explicitly authorizes that exact change. Needing them without authorization is a blocker (step 8) — say so, don't improvise.
 7. When the full suite is green and the brief is satisfied:
    - Comment on the issue: what you built and the key decisions. Start with: `> *This was generated by an AI agent working AFK.*`
