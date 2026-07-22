@@ -4,6 +4,7 @@ Skills that are still being developed. They're not ready to ship — expect roug
 
 - **[afk](./afk/SKILL.md)** — Launch an AFK night shift: a Ralph loop of sandboxed Sandcastle agents that drains the `ready-for-agent` queue and lands double-green work straight on main, handing unfinished work to fresh sessions via continuation issues. User-invoked.
 - **[decision-mapping](./decision-mapping/SKILL.md)** — Turn a loose idea into a sequenced map of investigation tickets, then drive them to resolution one at a time. User-invoked.
+- **[retro](./retro/SKILL.md)** — Mine the AFK night-shift logs for recurring failures and reviewer findings, then fold the lessons back into prompts, docs, and effort calibration. User-invoked.
 - **[review](./review/SKILL.md)** — Review changes since a fixed point along two parallel axes: **Standards** (does the diff follow the repo's coding standards?) and **Spec** (does the diff faithfully implement the originating issue/PRD?).
 - **[writing-beats](./writing-beats/SKILL.md)** — Shape an article as a journey of beats, choose-your-own-adventure style. Pick a starting beat, write only that beat, then pivot to the next, until the article reaches a natural end.
 - **[writing-fragments](./writing-fragments/SKILL.md)** — Grilling session that mines you for fragments — heterogeneous nuggets of writing — and appends them to a single document as raw material for a future article.
