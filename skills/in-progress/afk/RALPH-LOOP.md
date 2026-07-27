@@ -2,7 +2,7 @@
 
 Templates for the files `/afk` generates into `.sandcastle/`. Adapt before writing:
 
-- Replace `ready-for-agent`, `needs-triage` with the actual label strings from `docs/agents/triage-labels.md`.
+- Replace the label strings — `ready-for-agent`, `needs-triage`, and the `EFFORT_LABELS` keys — with the mapped strings from `docs/agents/triage-labels.md`.
 - Replace the `gh` commands with the tracker CLI from `docs/agents/issue-tracker.md` (e.g. `glab` for GitLab). For local-markdown trackers, replace the queue query with a directory scan.
 - Keep the structure: fetch queue → fresh agent per issue → tracker is the only state carried between iterations.
 - Both templates load `.sandcastle/.env` into the host process first: the tracker CLI calls (`gh issue list`/`edit`) run **host-side** via `execSync`, so a `GH_TOKEN` that lives only in `.sandcastle/.env` is invisible to them without this. (Sandcastle handles the sandbox's env itself.) `process.loadEnvFile` needs Node 20.12+; on older Node, inline a five-line parser instead.
@@ -128,15 +128,20 @@ async function waitForCi(branch: string): Promise<boolean> {
   return false; // never finished — fail safe
 }
 
-// Effort tier from the ticket's effort:* label. Tickets are sized where
+// Effort tier from the ticket's effort label. Tickets are sized where
 // they are born — at /triage, /to-issues, or by the implementer that files
 // a scope-discovery issue (see prompt.md). An unlabeled ticket is therefore
 // a continuation or a hand-filed one, and "standard" is the right default
-// for both ("finish the work" is standard-shaped).
-const judgeEffort = (issue: Issue): Tier => {
-  const labeled = issue.labels.find((l) => l.startsWith("effort:"))?.slice(7);
-  return labeled === "light" || labeled === "deep" ? labeled : "standard";
+// for both ("finish the work" is standard-shaped). Keys are substituted at
+// generation with the tracker's mapped strings from
+// docs/agents/triage-labels.md, so custom vocabularies route correctly.
+const EFFORT_LABELS: Record<string, Tier> = {
+  "effort:light": "light",
+  "effort:standard": "standard",
+  "effort:deep": "deep",
 };
+const judgeEffort = (i: Issue): Tier =>
+  i.labels.map((l) => EFFORT_LABELS[l]).find(Boolean) ?? "standard";
 
 type Issue = { number: number; title: string; labels: string[]; body: string };
 
