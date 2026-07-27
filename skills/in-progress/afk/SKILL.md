@@ -11,7 +11,7 @@ Turn the `ready-for-agent` queue into merged commits on main while the user is a
 - **The Ralph technique** — a dumb outer loop that starts a *fresh* agent for each unit of work, with all state living outside the agent (here: the issue tracker and git). No context carries over between iterations; the tracker is the memory.
 - **[Sandcastle](https://github.com/mattpocock/sandcastle)** (`@ai-hero/sandcastle`) — runs each agent in an isolated Docker/Podman sandbox on its own branch and manages the worktrees and commits.
 
-The user should never have to hand-configure Sandcastle. `/afk` does the preflight, scaffolds and configures everything it can, launches the loop as a detached process, and reports how to watch and stop it. The only thing it can never do for the user is provide credentials.
+The user should never have to hand-configure Sandcastle. `/afk` does the preflight, scaffolds and configures everything it can — including building `.sandcastle/.env` from the host's own credentials — launches the loop as a detached process, and reports how to watch and stop it. The only thing it can never do is conjure credentials the host doesn't have.
 
 ## Reference docs
 
@@ -21,7 +21,7 @@ The user should never have to hand-configure Sandcastle. `/afk` does the preflig
 
 1. **Repo config exists — or gets bootstrapped inline.** Use `docs/agents/issue-tracker.md` and `docs/agents/triage-labels.md` where they exist (written by `/setup-matt-pocock-skills`), and bootstrap **only what's missing** — never overwrite a surviving file. For a missing tracker config: detect from the git remote (GitHub → `gh`, GitLab → `glab`; neither → stop, this skill needs a queryable tracker). For a missing label mapping: inspect the tracker's existing labels first and map obvious equivalents (`triage`, `wont-fix`, …) into the written mapping instead of creating near-duplicates — a fresh `ready-for-agent` label beside an established equivalent would point the loop at an empty queue while the real work sits under the old name. Create canonical names (the five triage roles plus `effort:light`/`effort:standard`/`effort:deep`) only where nothing equivalent exists, and ask the one question only if an overlap is genuinely ambiguous. Say what was bootstrapped in the launch summary. Running `/setup-matt-pocock-skills` later completes what the bootstrap skips (domain docs, autonomy, the `## Agent skills` block) and preserves these files.
 2. **A container runtime is up** — `docker info` (or `podman info`) succeeds. If not, stop: the whole point is sandboxed agents; never fall back to running unsandboxed.
-3. **Credentials exist** (checked in step 3 below) — this is the one manual step the user must do once.
+3. **Credentials are reachable** (checked in step 3 below) — model access and a tracker token, taken from the host environment. On a machine set up once (subscription token or API key + `gh auth`), this needs nothing per project.
 
 ## Invocation
 
@@ -53,22 +53,24 @@ If `.sandcastle/` is missing:
 
 If `.sandcastle/` already exists, leave the user's `Dockerfile` and `.env` alone — only regenerate the files this skill owns (`main.ts`, `prompt.md`, see step 4).
 
-### 3. Check credentials
+### 3. Ensure credentials — generated from your environment
 
-Verify `.sandcastle/.env` contains:
+`/afk` builds `.sandcastle/.env` from the host's own credentials, so a machine whose global environment is set up once needs **zero per-project secrets**. If `.sandcastle/.env` is missing (or has no model-access line), generate it now; if it already exists, leave it untouched.
 
-- **Model access**, one of:
-  - `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY` — agents talk to Anthropic directly (default), or
-  - `OPENROUTER_API_KEY` — agents are routed through [OpenRouter](https://openrouter.ai), which speaks the Anthropic Messages protocol, so any OpenRouter model slug can power the agents (see the routing block in [RALPH-LOOP.md](RALPH-LOOP.md)), or
-  - `OLLAMA_MODEL` (e.g. `qwen3-coder:30b`, plus optional `OLLAMA_URL`) — agents run on **local models** via [Ollama](https://ollama.com), which also speaks the Anthropic Messages protocol. No API key at all.
-  - Precedence when several are present: Ollama > OpenRouter > Anthropic, unless the user says otherwise.
-- A tracker token if the tracker CLI needs one inside the sandbox (e.g. `GH_TOKEN`).
+- **Model access** — write exactly **one** line, taking the first that is present in the host environment (writing more than one lets a higher-precedence credential shadow the rest):
+  1. `OLLAMA_MODEL` (plus `OLLAMA_URL` if set) — **local models** via [Ollama](https://ollama.com), no key.
+  2. `OPENROUTER_API_KEY` — agents routed through [OpenRouter](https://openrouter.ai) (any model slug; see the routing block in [RALPH-LOOP.md](RALPH-LOOP.md)).
+  3. `CLAUDE_CODE_OAUTH_TOKEN` — Anthropic via your **Pro/Max subscription**, no API billing (mint one with `claude setup-token`).
+  4. `ANTHROPIC_API_KEY` — Anthropic pay-per-token API.
+
+  Prefer 3 for subscription users. A present `ANTHROPIC_API_KEY` **shadows** `CLAUDE_CODE_OAUTH_TOKEN` and forces API billing, so when both are in the host env write only the one the user wants — never both.
+- **Tracker token** — for a GitHub tracker, write `GH_TOKEN=$(gh auth token)` (host-side). For other trackers, write the token that CLI needs; omit it if the CLI authenticates from the host keychain without one.
+
+Copy the real values from the host environment into the file — **never print, echo, or commit them** — and confirm `.env` is git-ignored (the scaffold's `.gitignore` covers it; verify it survived).
 
 **Ollama preflight:** when `OLLAMA_MODEL` is set, verify before launching that the Ollama server responds and the model is pulled (`curl <url>/api/tags`, or `ollama list`). From inside the sandbox `localhost` is the container, so the default URL is `http://host.docker.internal:11434`; on Linux use `network: "host"` in the docker() config (then `http://localhost:11434`). If the server is down or the model missing, stop and say exactly what to run — don't launch a loop that will fail on its first call.
 
-If anything is missing, **stop and tell the user exactly which variable to add to `.sandcastle/.env`**, then have them re-invoke `/afk`. Never generate, guess, echo, or commit token values, and confirm `.env` is git-ignored (the scaffold's `.gitignore` handles this — verify it survived).
-
-This is the single one-time manual step. Every later `/afk` run sails through this check.
+**Only stop** if the host has none of the model-access credentials above (and, for a GitHub tracker, no `gh auth`): tell the user exactly what to set on their machine — `claude setup-token` for a subscription token, `gh auth login` for the tracker — then have them re-invoke `/afk`. Once the host environment is set up, every project sails through this step with nothing to configure.
 
 ### 4. Generate the loop
 
@@ -84,7 +86,7 @@ When generating, substitute `VERIFY_CMD` with the repo's real test command (foun
 
 **Model routing:** the generated `agent()` helper defaults to Anthropic directly, flips to OpenRouter when `OPENROUTER_API_KEY` is set, and to local Ollama when `OLLAMA_MODEL` is set. If the user names a model (`/afk model=qwen/qwen3-coder`, "implement locally, review with Opus"), set the model slug(s) accordingly — split implementer/reviewer providers are encouraged: a local implementer with a cloud reviewer keeps the merge gate strong while the token-heavy work runs free.
 
-**Effort dispatch:** each ticket's implementer runs on the smallest model tier that can handle it (`light` / `standard` / `deep`, mapped per provider in the `MODELS` table). Sizing happens where tickets are born — `/triage` and `/to-issues` label the tickets they produce, and the implementer prompt labels the issues agents file — so the loop just reads the `effort:*` label, with `standard` as the fail-safe for anything unlabeled (e.g. continuations). The **reviewer always runs the deep tier** regardless of the implementer's — it is the last gate before main, and skimping there is where autonomous merging goes wrong.
+**Effort dispatch:** each ticket's implementer runs on the smallest model tier that can handle it (`light` / `standard` / `deep`, mapped per provider in the `MODELS` table). The tier comes from the ticket's `effort:*` label, set wherever the ticket was born — at `/triage` or `/to-issues`, or by the implementer when it files a scope-discovery issue — so sizing is done once, by whoever has the most context on the work. Unlabeled tickets (continuations, hand-filed issues) fall back to `standard`. The **reviewer always runs the deep tier** regardless of the implementer's — it is the last gate before main, and skimping there is where autonomous merging goes wrong.
 
 Show the user a one-paragraph summary of what was generated (mode, cap, branch naming, review rounds, model routing) before launching — unless they invoked with arguments that already pin these down.
 
