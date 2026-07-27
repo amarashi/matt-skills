@@ -2,7 +2,7 @@
 
 Templates for the files `/afk` generates into `.sandcastle/`. Adapt before writing:
 
-- Replace `ready-for-agent`, `needs-triage` with the actual label strings from `docs/agents/triage-labels.md`.
+- Replace the label strings — `ready-for-agent`, `needs-triage`, and the `EFFORT_LABELS` keys — with the mapped strings from `docs/agents/triage-labels.md`.
 - Replace the `gh` commands with the tracker CLI from `docs/agents/issue-tracker.md` (e.g. `glab` for GitLab). For local-markdown trackers, replace the queue query with a directory scan.
 - Keep the structure: fetch queue → fresh agent per issue → tracker is the only state carried between iterations.
 - Both templates load `.sandcastle/.env` into the host process first: the tracker CLI calls (`gh issue list`/`edit`) run **host-side** via `execSync`, so a `GH_TOKEN` that lives only in `.sandcastle/.env` is invisible to them without this. (Sandcastle handles the sandbox's env itself.) `process.loadEnvFile` needs Node 20.12+; on older Node, inline a five-line parser instead.
@@ -127,12 +127,17 @@ async function waitForCi(branch: string): Promise<boolean> {
 }
 
 // Sizing happens where tickets are born — /triage, /to-issues, and the
-// implementer prompt all attach an effort:* label. Unlabeled tickets
-// (e.g. continuations) run standard.
-const judgeEffort = (i: Issue): Tier => {
-  const l = i.labels.find((x) => x.startsWith("effort:"))?.slice(7);
-  return l === "light" || l === "deep" ? l : "standard";
+// implementer prompt all attach an effort label. Keys are substituted at
+// generation with the tracker's mapped strings from
+// docs/agents/triage-labels.md, so custom vocabularies route correctly.
+// Unlabeled tickets (e.g. continuations) run standard.
+const EFFORT_LABELS: Record<string, Tier> = {
+  "effort:light": "light",
+  "effort:standard": "standard",
+  "effort:deep": "deep",
 };
+const judgeEffort = (i: Issue): Tier =>
+  i.labels.map((l) => EFFORT_LABELS[l]).find(Boolean) ?? "standard";
 
 type Issue = { number: number; title: string; labels: string[]; body: string };
 
