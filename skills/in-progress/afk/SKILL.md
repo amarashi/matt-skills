@@ -19,7 +19,7 @@ The user should never have to hand-configure Sandcastle. `/afk` does the preflig
 
 ## Preconditions
 
-1. **`/setup-matt-pocock-skills` has been run** — `docs/agents/issue-tracker.md` and `docs/agents/triage-labels.md` exist. If not, stop and tell the user to run it first.
+1. **Repo config exists — or gets bootstrapped inline.** If `docs/agents/issue-tracker.md` and `docs/agents/triage-labels.md` exist (written by `/setup-matt-pocock-skills`), use them. If not, **don't stop** — bootstrap the minimum with the same defaults-first rules: detect the tracker from the git remote (GitHub → `gh`, GitLab → `glab`; neither → stop, this skill needs a queryable tracker), use the canonical label strings (the five triage roles plus `effort:light`/`effort:standard`/`effort:deep`, creating any that don't exist in the tracker), and write both files to `docs/agents/` so every later run — and `/triage`, `/to-issues` — reads the same config. Say so in the launch summary. Running `/setup-matt-pocock-skills` later completes what the bootstrap skips (domain docs, autonomy, the `## Agent skills` block) and preserves these files.
 2. **A container runtime is up** — `docker info` (or `podman info`) succeeds. If not, stop: the whole point is sandboxed agents; never fall back to running unsandboxed.
 3. **Credentials exist** (checked in step 3 below) — this is the one manual step the user must do once.
 
