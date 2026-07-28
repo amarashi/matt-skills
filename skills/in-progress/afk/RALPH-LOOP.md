@@ -149,6 +149,46 @@ function ensureLabels() {
 
 const MAIN_BRANCH = sh(`git branch --show-current`).trim();
 
+// The sandbox image name, made explicit so the preflight below and the loop's
+// createSandbox() can never disagree about which image to use. It must match
+// sandcastle's own default — `sandcastle:<lower-cased, sanitised basename of the
+// repo dir>` — because createSandbox() derives exactly that when docker() is
+// given no imageName. Passing IMAGE to docker() explicitly pins both to one value.
+const IMAGE = `sandcastle:${(process.cwd().replace(/[\\/]+$/, "").split(/[\\/]/).pop() ?? "local").toLowerCase().replace(/[^a-z0-9_.-]/g, "-") || "local"}`;
+
+// Cold-Docker preflight. `docker info` succeeding is NOT enough: for a while
+// after Docker Desktop starts, the daemon answers while its Linux image store is
+// still mounting, so the sandbox image reads as "not found". Launch into that
+// window and the first issue's createSandbox() fails on a pure transient — and
+// the loop would spend that issue's one nightly attempt on it, triage the issue,
+// and file a bogus continuation. So before touching any issue, wait until a real
+// container actually STARTS from the image the loop will use — an image can be
+// listed while the engine still can't run it. Returns false (launch aborts,
+// nothing attempted) if it never warms within the budget.
+const DOCKER_WARMUP_MS = 3 * 60_000;
+async function preflightSandbox(): Promise<boolean> {
+  const deadline = Date.now() + DOCKER_WARMUP_MS;
+  let lastErr = "";
+  for (let attempt = 1; ; attempt++) {
+    try {
+      execFileSync("docker", ["image", "inspect", IMAGE], { stdio: "ignore" });
+      execFileSync("docker", ["run", "--rm", "--entrypoint", "true", IMAGE], { stdio: "ignore", timeout: 60_000 });
+      if (attempt > 1) console.log(`[ralph] sandbox image ready after ${attempt} attempt(s)`);
+      return true;
+    } catch (err: any) {
+      lastErr = err?.stderr?.toString?.() || err?.message || String(err);
+      if (Date.now() >= deadline) {
+        const msg = `sandbox image ${IMAGE} not runnable after ${Math.round(DOCKER_WARMUP_MS / 1000)}s — is Docker up and the image built (npx @ai-hero/sandcastle docker build-image)? Last error: ${lastErr}`;
+        console.error(`[ralph] ${msg}`);
+        notify(`AFK did not start — ${msg}`);
+        return false;
+      }
+      console.log(`[ralph] waiting for Docker/image to warm (attempt ${attempt})…`);
+      await new Promise((r) => setTimeout(r, 5_000));
+    }
+  }
+}
+
 // Independent third gate: the repo's own CI on the pushed branch. The
 // sandbox suite can lie (env drift, missing secrets); a neutral runner
 // can't. Repos without CI skip this gate.
@@ -216,7 +256,7 @@ async function implementAndReview(issue: Issue): Promise<boolean> {
   console.log(`[ralph] #${issue.number} sized ${tier} → ${MODELS[tier]}`);
   await using sandbox = await createSandbox({
     branch: `agent/issue-${issue.number}`,
-    sandbox: docker({ imageName: "sandcastle:local" }),
+    sandbox: docker({ imageName: IMAGE }),
   });
 
   const impl = await sandbox.run({
@@ -390,6 +430,7 @@ One pipeline at a time. The queue is re-queried every round, so continuation iss
 
 ```ts
 ensureLabels(); // the queue/triage labels must exist before the loop can move issues onto them
+if (!(await preflightSandbox())) process.exit(1); // Docker/image not ready — abort before any issue is touched
 
 const attempted = new Set<number>();
 let landed = 0;
@@ -429,6 +470,7 @@ Waves of concurrent pipelines, each on its own branch (mandatory — concurrent 
 
 ```ts
 ensureLabels(); // the queue/triage labels must exist before the loop can move issues onto them
+if (!(await preflightSandbox())) process.exit(1); // Docker/image not ready — abort before any issue is touched
 
 const CONCURRENCY = 3;
 const attempted = new Set<number>();
