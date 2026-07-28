@@ -1,193 +1,155 @@
-<p>
-  <a href="https://www.aihero.dev/s/skills-newsletter">
-    <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://res.cloudinary.com/total-typescript/image/upload/v1777382277/skills-repo-dark_2x.png">
-      <source media="(prefers-color-scheme: light)" srcset="https://res.cloudinary.com/total-typescript/image/upload/v1777382277/skill-repo-light_2x.png">
-      <img alt="Skills" src="https://res.cloudinary.com/total-typescript/image/upload/v1777382277/skill-repo-light_2x.png" width="369">
-    </picture>
-  </a>
-</p>
+# AFK — Ship Reviewed Code While You Sleep
 
-# Skills For Real Engineers
+**One command turns "here's roughly what I want built" into merged, reviewed commits on `main` — overnight, unattended, in a sandbox.**
 
-[![skills.sh](https://skills.sh/b/mattpocock/skills)](https://skills.sh/mattpocock/skills)
+`/afk-start` chains a whole engineering pipeline behind a **single confirmation**: it configures the repo, grills your idea into a concrete plan, cuts that plan into agent-ready tickets, then launches a loop of sandboxed agents that **implement → review → merge** each ticket. You approve the plan once; everything after runs while you're away.
 
-My agent skills that I use every day to do real engineering - not vibe coding.
+Built on [Matt Pocock's engineering skills](https://github.com/mattpocock/skills), the [Sandcastle](https://github.com/mattpocock/sandcastle) sandbox runner, and the **Ralph** loop technique (a dumb outer loop that starts a *fresh* agent per unit of work, with all state living in the issue tracker and git).
 
-Developing real applications is hard. Approaches like GSD, BMAD, and Spec-Kit try to help by owning the process. But while doing so, they take away your control and make bugs in the process hard to resolve.
+---
 
-These skills are designed to be small, easy to adapt, and composable. They work with any model. They're based on decades of engineering experience. Hack around with them. Make them your own. Enjoy.
+## What makes it safe to leave running
 
-If you want to keep up with changes to these skills, and any new ones I create, you can join ~60,000 other devs on my newsletter:
+- **Sandboxed always** — a fresh Docker/Podman sandbox per ticket, on its own branch. Never runs your code unsandboxed.
+- **Double-green merges** — a branch lands only when the implementer's full test suite passes **and** an independent reviewer with fresh context approves. **Triple-green** when the repo has CI (the neutral runner is the third gate), with an auto-revert if `main` goes red after a landing.
+- **One human checkpoint** — you confirm the plan once, up front. No mid-night prompts.
+- **Protected paths** — agents may not touch CI workflows, deploy config, secrets, or DB migrations unless a ticket explicitly authorizes it.
+- **Bounded** — a per-night issue cap and an 8-hour wall-clock deadline. Work that can't converge is handed to a fresh session via a `[continuation]` issue, never retried blindly.
 
-[Sign Up To The Newsletter](https://www.aihero.dev/s/skills-newsletter)
+---
 
-## Quickstart (30-second setup)
+## Prerequisites (set once per machine)
 
-1. Run the skills.sh installer:
+1. **Claude Code** (or a compatible agent) with this workflow's skills installed — see step 1.
+2. **A container runtime running** — `docker info` (or `podman info`) succeeds.
+3. **Model access** — any *one* of: a Claude Pro/Max token (`claude setup-token`), an `ANTHROPIC_API_KEY`, an `OPENROUTER_API_KEY`, or local **Ollama**.
+4. **For a GitHub tracker** — `gh auth login`.
 
-```bash
-npx skills@latest add mattpocock/skills
+Once your machine is set up, every project after this needs zero per-project secrets.
+
+---
+
+## Step by step
+
+### 1. Install the skills
+
+Add the workflow's skills to your agent (via [skills.sh](https://skills.sh) or by copying them into your agent's skills folder):
+
+```
+afk-start   setup-matt-pocock-skills   grilling
+to-tickets  to-spec   triage   afk   retro
 ```
 
-2. Pick the skills you want, and which coding agents you want to install them on. **Make sure you select `/setup-matt-pocock-skills`**.
+`afk-start` is the front door; it orchestrates the rest.
 
-3. Run `/setup-matt-pocock-skills` in your agent. It will:
-   - Detect your issue tracker from the repo (GitHub, GitLab, or local files) and configure it
-   - Set up the triage labels `/triage` uses, mapping to your existing labels where they match
-   - Pick where docs live, then report every choice it made so you can override any of them
-   - Only ask a question when it genuinely can't tell (run `/setup-matt-pocock-skills interactive` if you'd rather be walked through each decision)
+### 2. Check the prerequisites
 
-4. Bam - you're ready to go.
+```bash
+docker info            # runtime up?
+gh auth status         # tracker authenticated?
+# and one model credential present (subscription token / API key / OpenRouter / Ollama)
+```
 
-## Why These Skills Exist
+### 3. Kick it off
 
-I built these skills as a way to fix common failure modes I see with Claude Code, Codex, and other coding agents.
+```
+/afk-start "Add password reset via email — token table, request + confirm endpoints, rate limiting"
+```
 
-### #1: The Agent Didn't Do What I Want
+Not sure yet? **Preview without launching:**
 
-> "No-one knows exactly what they want"
->
-> David Thomas & Andrew Hunt, [The Pragmatic Programmer](https://www.amazon.co.uk/Pragmatic-Programmer-Anniversary-Journey-Mastery/dp/B0833F1T3V)
+```
+/afk-start dry-run "…"
+```
 
-**The Problem**. The most common failure mode in software development is misalignment. You think the dev knows what you want. Then you see what they've built - and you realize it didn't understand you at all.
+`dry-run` does the entire plan — bootstrap, grill, tickets, launch settings — and shows you exactly what *would* run, but starts nothing.
 
-This is just the same in the AI age. There is a communication gap between you and the agent. The fix for this is a **grilling session** - getting the agent to ask you detailed questions about what you're building.
+Behind the scenes this triggers:
 
-**The Fix** is to use:
+- **Bootstrap** — if the folder isn't a git repo it runs `git init`; if there's no remote it creates a **private** GitHub repo. (On an *existing* codebase with history but no remote, it **asks first** before publishing.)
+- **Preflight** — verifies Docker, credentials, and finds your test command; on an existing project it also detects your toolchain so the sandbox can build and test it.
+- **Grill + draft** — interrogates your idea the way a senior engineer would, then drafts every decision (repo config, the plan, the ticket breakdown, launch settings) each with a **recommended answer**.
 
-- [`/grill-me`](./skills/productivity/grill-me/SKILL.md) - for non-code uses
-- [`/grill-with-docs`](./skills/engineering/grill-with-docs/SKILL.md) - same as [`/grill-me`](./skills/productivity/grill-me/SKILL.md), but adds more goodies (see below)
+### 4. Confirm the plan — once
 
-These are my most popular skills. They help you align with the agent before you get started, and think deeply about the change you're making. Use them _every_ time you want to make a change.
+This is the **only** checkpoint. You get one batch to review:
 
-### #2: The Agent Is Way Too Verbose
+- **A. Repo config** — issue tracker, triage labels, doc layout
+- **B. The plan** — every design decision, with the recommendation
+- **C. Tickets** — the tracer-bullet slices, their blocking order, and effort sizing
+- **D. Launch settings** — sequential vs parallel, models, test command
 
-> With a ubiquitous language, conversations among developers and expressions of the code are all derived from the same domain model.
->
-> Eric Evans, [Domain-Driven-Design](https://www.amazon.co.uk/Domain-Driven-Design-Tackling-Complexity-Software/dp/0321125215)
+Edit anything, or approve as-is. **After you approve, it runs unattended.**
 
-**The Problem**: At the start of a project, devs and the people they're building the software for (the domain experts) are usually speaking different languages.
+### 5. It runs while you're away
 
-I felt the same tension with my agents. Agents are usually dropped into a project and asked to figure out the jargon as they go. So they use 20 words where 1 will do.
+It writes the config, files the tickets (labeled `ready-for-agent` + `effort:*`), and launches the loop as a detached process. Then:
 
-**The Fix** for this is a shared language. It's a document that helps agents decode the jargon used in the project.
+- **Watch:** `tail -f .sandcastle/logs/*.log`
+- **Stop gracefully:** `touch .sandcastle/STOP` (finishes the in-flight issue, files the report)
+- **Hard stop:** kill the `tsx` PID it prints
 
-<details>
-<summary>
-Example
-</summary>
+### 6. The morning after
 
-Here's an example [`CONTEXT.md`](https://github.com/mattpocock/course-video-manager/blob/076a5a7a182db0fe1e62971dd7a68bcadf010f1c/CONTEXT.md), from my `course-video-manager` repo. Which one is easier to read?
+- **Night report** — one issue summarizes every attempt (landed / did not land). Start here.
+- **`git log origin/main`** — the night's ledger; every landed issue is merged, pushed, and closed with a summary.
+- **`[continuation]` issues** — work that didn't converge, ready for the next run.
+- **`/retro`** — after a rough night, mines the logs and folds the lessons back into the agents' prompts.
 
-- **BEFORE**: "There's a problem when a lesson inside a section of a course is made 'real' (i.e. given a spot in the file system)"
-- **AFTER**: "There's a problem with the materialization cascade"
+---
 
-This concision pays off session after session.
+## Choosing models
 
-</details>
+Every model choice lives in **one file** — `.sandcastle/models.json` — generated for you with sensible defaults. Per provider, per effort tier, plus which tier the reviewer runs:
 
-This is built into [`/grill-with-docs`](./skills/engineering/grill-with-docs/SKILL.md). It's a grilling session, but that helps you build a shared language with the AI, and document hard-to-explain decisions in ADR's.
+```json
+{
+  "provider": "auto",
+  "reviewerTier": "deep",
+  "providers": {
+    "anthropic":  { "light": "claude-haiku-4-5",          "standard": "claude-sonnet-5",  "deep": "claude-opus-4-8" },
+    "openrouter": { "light": "deepseek/deepseek-v4-flash", "standard": "qwen/qwen3-coder", "deep": "z-ai/glm-4.7" },
+    "ollama":     { "light": "qwen2.5-coder:7b",           "standard": "gpt-oss:20b",      "deep": "qwen3-coder:30b" }
+  }
+}
+```
 
-It's hard to explain how powerful this is. It might be the single coolest technique in this repo. Try it, and see.
+- **`provider: "auto"`** picks by environment: OpenRouter if `OPENROUTER_API_KEY` is set, else Ollama if `OLLAMA_URL` is set, else Anthropic direct. Pin it to force one.
+- **Effort tiers** — each ticket runs on the smallest model that can handle it (`light`/`standard`/`deep`, from its `effort:*` label). The **reviewer always runs `reviewerTier`** — keep it your strongest.
+- **Cheap cloud** — the OpenRouter defaults are picked for cost/quality (verify live prices at [openrouter.ai/models](https://openrouter.ai/models); the market moves weekly). Upgrade `deep` to `z-ai/glm-5.2` or `moonshotai/kimi-k2.7-code` for maximum quality.
+- **Local** — the Ollama defaults suit a ~16 GB single-GPU box. `ollama pull` them first, and make sure each has ≥32k context. A local implementer with a cloud reviewer is the sweet spot.
 
-> [!TIP]
-> A shared language has many other benefits than reducing verbosity:
->
-> - **Variables, functions and files are named consistently**, using the shared language
-> - As a result, the **codebase is easier to navigate** for the agent
-> - The agent also **spends fewer tokens on thinking**, because it has access to a more concise language
+---
 
-### #3: The Code Doesn't Work
+## Command reference
 
-> "Always take small, deliberate steps. The rate of feedback is your speed limit. Never take on a task that’s too big."
->
-> David Thomas & Andrew Hunt, [The Pragmatic Programmer](https://www.amazon.co.uk/Pragmatic-Programmer-Anniversary-Journey-Mastery/dp/B0833F1T3V)
+| Command | What it does |
+|---|---|
+| `/afk-start "…"` | The whole pipeline behind one confirmation, ending in a launched loop |
+| `/afk-start dry-run "…"` | Plan everything, show what would launch, start nothing |
+| `/afk-start parallel` | Fan out — one sandbox per issue (capped at 3 by default) |
+| `/afk-start model=<slug>` | Override the model(s) for this run |
+| `/afk` | Launch the loop directly against an already-populated `ready-for-agent` queue |
+| `/afk doctor` | Prove the whole machine end-to-end against a throwaway canary ticket on a scratch branch — **run this first on any existing project** |
+| `/afk parallel` | The loop in parallel mode |
+| `/retro` | Turn a night's failures and reviewer findings into prompt/doc fixes |
+| `/setup-matt-pocock-skills` | Configure a repo's tracker/labels/docs by hand (afk-start does this for you) |
 
-**The Problem**: Let's say that you and the agent are aligned on what to build. What happens when the agent _still_ produces crap?
+---
 
-It's time to look at your feedback loops. Without feedback on how the code it produces actually runs, the agent will be flying blind.
+## Using it on an existing project
 
-**The Fix**: You need the usual tranche of feedback loops: static types, browser access, and automated tests.
+It's repo-agnostic — arguably *better* on an existing project, because there's real code to grill against and a real test suite to gate on:
 
-For automated tests, a red-green-refactor loop is critical. This is where the agent writes a failing test first, then fixes the test. This helps give the agent a consistent level of feedback that results in far better code.
+- **Bootstrap is a no-op** when you already have a repo + remote; it asks before publishing an existing codebase that has no remote.
+- **Setup edits, never overwrites** your `CLAUDE.md` (adds an `## Agent skills` block); skips entirely if already configured.
+- **Only `ready-for-agent` issues are ever touched** — your existing backlog is invisible until you label it.
+- **The sandbox is provisioned for your toolchain** (reusing a `.devcontainer`/`Dockerfile`/`compose` if present, else detecting your stack).
 
-I've built a **[`/tdd`](./skills/engineering/tdd/SKILL.md) skill** you can slot into any project. It encourages red-green-refactor and gives the agent plenty of guidance on what makes good and bad tests.
+⚠️ **Run `/afk doctor` before your first real night.** It exercises the full pipeline on a canary ticket and immediately reveals whether the sandbox can build and test *your* project — the #1 reason a first night flops. The merge gate is only as strong as your test suite, so a well-tested repo with CI is the safest case.
 
-For debugging, I've also built a **[`/diagnosing-bugs`](./skills/engineering/diagnosing-bugs/SKILL.md)** skill that wraps best debugging practices into a simple loop.
+---
 
-### #4: We Built A Ball Of Mud
+## Credit
 
-> "Invest in the design of the system _every day_."
->
-> Kent Beck, [Extreme Programming Explained](https://www.amazon.co.uk/Extreme-Programming-Explained-Embrace-Change/dp/0321278658)
-
-> "The best modules are deep. They allow a lot of functionality to be accessed through a simple interface."
->
-> John Ousterhout, [A Philosophy Of Software Design](https://www.amazon.co.uk/Philosophy-Software-Design-2nd/dp/173210221X)
-
-**The Problem**: Most apps built with agents are complex and hard to change. Because agents can radically speed up coding, they also accelerate software entropy. Codebases get more complex at an unprecedented rate.
-
-**The Fix** for this is a radical new approach to AI-powered development: caring about the design of the code.
-
-This is built in to every layer of these skills:
-
-- [`/to-prd`](./skills/engineering/to-prd/SKILL.md) quizzes you about which modules you're touching before creating a PRD
-
-And crucially, [`/improve-codebase-architecture`](./skills/engineering/improve-codebase-architecture/SKILL.md) helps you rescue a codebase that has become a ball of mud. I recommend running it on your codebase once every few days.
-
-### Summary
-
-Software engineering fundamentals matter more than ever. These skills are my best effort at condensing these fundamentals into repeatable practices, to help you ship the best apps of your career. Enjoy.
-
-## Reference
-
-The catalog below covers the shipped skills. For the complete inventory — every bucket (including drafts), every reference doc inside each skill folder, the scripts, and the files these skills generate into your repos — see [docs/repo-map.md](./docs/repo-map.md).
-
-These split on one axis — who can invoke them. **User-invoked** skills are reachable only when you type them (e.g. `/grill-me`); their job is to orchestrate. **Model-invoked** skills can be invoked by you _or_ reached for automatically by the agent when the task fits; they hold the reusable discipline. A user-invoked skill may invoke model-invoked skills, but never another user-invoked one.
-
-### Engineering
-
-Skills I use daily for code work.
-
-**User-invoked**
-
-- **[ask-matt](./skills/engineering/ask-matt/SKILL.md)** — Ask which skill or flow fits your situation. A router over the user-invoked skills in this repo.
-- **[grill-with-docs](./skills/engineering/grill-with-docs/SKILL.md)** — Grilling session that also builds your project's domain model, sharpening terminology and updating `CONTEXT.md` and ADRs inline. Supports autonomy tiers (`assisted` / `autonomous`) for fewer or zero questions.
-- **[triage](./skills/engineering/triage/SKILL.md)** — Move issues through a state machine of triage roles.
-- **[improve-codebase-architecture](./skills/engineering/improve-codebase-architecture/SKILL.md)** — Scan a codebase for deepening opportunities, present them as a visual HTML report, then grill through whichever one you pick.
-- **[setup-matt-pocock-skills](./skills/engineering/setup-matt-pocock-skills/SKILL.md)** — Configure this repo for the engineering skills (issue tracker, triage labels, domain doc layout). Run once per repo before using the other engineering skills.
-- **[to-issues](./skills/engineering/to-issues/SKILL.md)** — Break any plan, spec, or PRD into independently-grabbable issues using vertical slices.
-- **[to-prd](./skills/engineering/to-prd/SKILL.md)** — Turn the current conversation into a PRD and publish it to the issue tracker. No interview — just synthesizes what you've already discussed.
-- **[prototype](./skills/engineering/prototype/SKILL.md)** — Build a throwaway prototype to flesh out a design — either a runnable terminal app for state/business-logic questions, or several radically different UI variations toggleable from one route.
-
-**Model-invoked**
-
-- **[diagnosing-bugs](./skills/engineering/diagnosing-bugs/SKILL.md)** — Disciplined diagnosis loop for hard bugs and performance regressions: reproduce → minimise → hypothesise → instrument → fix → regression-test.
-- **[tdd](./skills/engineering/tdd/SKILL.md)** — Test-driven development with a red-green-refactor loop. Builds features or fixes bugs one vertical slice at a time.
-- **[domain-modeling](./skills/engineering/domain-modeling/SKILL.md)** — Actively build and sharpen a project's domain model — challenge terms against the glossary, stress-test with edge-case scenarios, and update `CONTEXT.md` and ADRs inline.
-- **[codebase-design](./skills/engineering/codebase-design/SKILL.md)** — Shared discipline and vocabulary for designing deep modules: a lot of behaviour behind a small interface, placed at a clean seam, testable through that interface.
-
-### Productivity
-
-General workflow tools, not code-specific.
-
-**User-invoked**
-
-- **[grill-me](./skills/productivity/grill-me/SKILL.md)** — Get relentlessly interviewed about a plan or design until every branch of the decision tree is resolved. Supports autonomy tiers (`assisted` / `autonomous`) for fewer or zero questions.
-- **[handoff](./skills/productivity/handoff/SKILL.md)** — Compact the current conversation into a handoff document so another agent can continue the work.
-- **[teach](./skills/productivity/teach/SKILL.md)** — Teach the user a new skill or concept over multiple sessions, using the current directory as a stateful teaching workspace.
-- **[writing-great-skills](./skills/productivity/writing-great-skills/SKILL.md)** — Reference for writing and editing skills well: the vocabulary and principles that make a skill predictable.
-
-**Model-invoked**
-
-- **[grilling](./skills/productivity/grilling/SKILL.md)** — Interview the user relentlessly about a plan or design until every branch of the decision tree is resolved. The reusable loop behind `grill-me` and `grill-with-docs`. Supports autonomy tiers (`assisted` / `autonomous`) for fewer or zero questions.
-
-### Misc
-
-Tools I keep around but rarely use.
-
-- **[git-guardrails-claude-code](./skills/misc/git-guardrails-claude-code/SKILL.md)** — Set up Claude Code hooks to block dangerous git commands (push, reset --hard, clean, etc.) before they execute.
-- **[migrate-to-shoehorn](./skills/misc/migrate-to-shoehorn/SKILL.md)** — Migrate test files from `as` type assertions to @total-typescript/shoehorn.
-- **[scaffold-exercises](./skills/misc/scaffold-exercises/SKILL.md)** — Create exercise directory structures with sections, problems, solutions, and explainers.
-- **[setup-pre-commit](./skills/misc/setup-pre-commit/SKILL.md)** — Set up Husky pre-commit hooks with lint-staged, Prettier, type checking, and tests.
+The engineering skills at the core of this workflow — grilling, tickets/specs, triage, TDD, domain modeling, and more — are [Matt Pocock's skills](https://github.com/mattpocock/skills), used under their license. `afk`, `afk-start`, and `retro` add the autonomous night-shift layer on top. Hack around with them and make them your own.
