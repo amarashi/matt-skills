@@ -99,6 +99,7 @@ Run `npx tsx .sandcastle/main.ts` as a detached background process with output t
 - the night budget: issue cap and the 8-hour wall-clock deadline
 - how to watch: `tail -f .sandcastle/logs/*.log`
 - how to stop: `touch .sandcastle/STOP` for a graceful stop (finishes the in-flight issue, files the report), or kill the `tsx` process (report its PID) for a hard stop
+- whether out-of-band notifications are on: if `AFK_NOTIFY_CMD` is set in the host environment, the loop pings it at launch and when the night report files (see [Away from keyboard, but reachable](#away-from-keyboard-but-reachable)); if it isn't set, note that — an unattended overnight run is exactly when a phone ping earns its keep
 
 When routing through a paid provider (OpenRouter), also remind the user once to set a spend limit on the API key itself — provider-side caps are the only ones a crashed loop can't overrun.
 
@@ -113,6 +114,15 @@ When the user returns, point them at:
 - **Continuations** — work that didn't converge was handed to a fresh session via `[continuation]` issues; any still open show what's mid-flight or awaiting the next run.
 - **Failures** — issues the loop gave up on (including failed continuations) are relabeled `needs-triage` with a comment explaining the blocker; they'll surface next `/triage`.
 - **Logs** — `.sandcastle/logs/issue-<n>*.log` per issue: implementation, each review round, each fix round.
+
+## Away from keyboard, but reachable
+
+An AFK run has two phases with different remote needs, and they compose:
+
+- **The interactive front** — sizing the work, any grilling of the plan, the single approval — happens in *this* session, before the loop detaches. If you are literally away from the keyboard, start this session under **Claude Code Remote Control** (`claude remote-control`, or a host wrapper) so you can do that planning from your phone. Nothing about AFK requires it, but the approval gate is interactive, and remote access is what lets you clear it from anywhere.
+- **The headless back** — once you approve, the loop runs detached and unattended. Here you don't want a live session, you want a ping. Set `AFK_NOTIFY_CMD` in the host environment to any command that reads a message on STDIN (Telegram, Slack, ntfy, a desktop toast). The loop calls it at launch and when the night report files; unset, the calls are silent no-ops.
+
+The two are independent: Remote Control lets you *drive* the interactive part remotely; `AFK_NOTIFY_CMD` lets the *autonomous* part reach you. Use either, both, or neither — neither is required to run AFK.
 
 ## Doctor (shakedown)
 
@@ -132,5 +142,6 @@ When the user returns, point them at:
 - **Branch per issue, never head.** Every pipeline runs on its own `agent/issue-<n>` branch; only the serialized host-side merge step touches main.
 - **Merge on double green only — triple when CI exists.** A branch lands only when the implementer's full suite is green AND an independent fresh-context reviewer approved AND (if the repo has CI) the neutral runner passes the pushed branch. Main's CI is watched after each landing; a red main auto-reverts the merge commit. Merges are serialized and never forced; a conflicted merge is aborted and routed to a continuation issue, not resolved blind.
 - **Bounded loop.** The generated `main.ts` caps total issues per night and never retries a failed issue in the same run. Continuation issues count toward the cap and never chain — a failed continuation goes to `needs-triage`, not to a third session.
+- **The failure path can never crash the night.** The loop ensures its own queue/triage labels exist on the tracker at startup (`ensureLabels()`, idempotent) — a label named in `docs/agents/triage-labels.md` is only a mapping and may never have been created on the tracker itself. And every tracker call in the failure handoff and the night-report step is best-effort: a missing label, a rate limit, or a transient `gh` error there is logged and swallowed, never thrown. One stuck ticket must never take down the remaining queue or the morning report with it.
 - **Closing is earned.** An issue is closed only after its branch is merged and pushed. Everything else stays open and labeled truthfully.
 - **Protected paths.** Agents may not touch CI workflows, deploy config, secrets, or database migrations unless the agent brief explicitly authorizes that exact change — enforced twice: the implementer prompt forbids it, and the reviewer auto-rejects it. Unattended agents editing the machinery that verifies them is the one loop this system must never close.

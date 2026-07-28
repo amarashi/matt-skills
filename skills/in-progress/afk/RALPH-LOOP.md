@@ -7,6 +7,7 @@ Templates for the files `/afk` generates into `.sandcastle/`. Adapt before writi
 - Keep the structure: fetch queue → fresh agent per issue → tracker is the only state carried between iterations.
 - Both templates load `.sandcastle/.env` into the host process first: the tracker CLI calls (`gh issue list`/`edit`) run **host-side** via `execSync`, so a `GH_TOKEN` that lives only in `.sandcastle/.env` is invisible to them without this. (Sandcastle handles the sandbox's env itself.) `process.loadEnvFile` needs Node 20.12+; on older Node, inline a five-line parser instead.
 - The orchestration script must be launched from a clean checkout of the default branch — merges land on whatever branch the host is on.
+- **Optional notifications:** the loop calls an `AFK_NOTIFY_CMD` host hook (if set) at launch and when the night report files — the message goes on the command's **STDIN**, never interpolated into a command line, so a crafted ticket title can't reach the host shell. Unset → the calls are silent no-ops, keeping the loop portable and secret-free.
 - If the user wants agents routed through OpenRouter (or named a non-Anthropic model), set `MODEL` to the OpenRouter slug they chose — different slugs per role are fine too (e.g. a cheaper model for the implementer, a stronger one for the reviewer, by splitting `agent()` into `implementer()`/`reviewer()`).
 - For local models via Ollama: pick a coding model with **at least 32k context** (small-context models fall apart on agentic loops). Mixing providers per role is often the sweet spot — a local implementer with a cloud reviewer keeps the merge gate strong while the token-heavy implementation runs free.
 
@@ -31,6 +32,7 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 process.loadEnvFile(".sandcastle/.env");
 
 const READY_LABEL = "ready-for-agent";
+const TRIAGE_LABEL = "needs-triage"; // where a failed issue goes for a human to re-triage
 const MAX_ISSUES_PER_NIGHT = 10;
 const MAX_IMPL_ITERATIONS = 10; // "keep working until green" budget per pass
 const MAX_REVIEW_ROUNDS = 3;
@@ -41,6 +43,22 @@ const MAX_REVIEW_ROUNDS = 3;
 rmSync(".sandcastle/STOP", { force: true }); // last night's marker must not silently no-op tonight
 const NIGHT_DEADLINE = Date.now() + 8 * 3600_000;
 const keepGoing = () => Date.now() < NIGHT_DEADLINE && !existsSync(".sandcastle/STOP");
+
+// Optional notifications. If AFK_NOTIFY_CMD is set in the host environment (or
+// .sandcastle/.env), it is spawned at launch and when the night report files,
+// with the message piped to its STDIN — never interpolated into a command line,
+// so a crafted ticket title cannot reach the host shell. Unset → silent. The
+// notifier itself (Telegram, Slack, ntfy, a desktop toast…) lives on the host,
+// keeping this loop portable and secret-free.
+const NOTIFY_CMD = process.env.AFK_NOTIFY_CMD;
+function notify(message: string) {
+  if (!NOTIFY_CMD) return;
+  try {
+    execSync(NOTIFY_CMD, { input: message, stdio: ["pipe", "ignore", "ignore"] });
+  } catch (err) {
+    console.error("[ralph] notify failed (non-fatal):", err);
+  }
+}
 
 // Substituted at generation time with the repo's real test command ("" to
 // disable). Runs host-side on the freshly merged tree before pushing — the
@@ -106,6 +124,28 @@ const sh = (cmd: string) => execSync(cmd, { encoding: "utf8" });
 // tracker credentials. Anything that interpolates tracker data uses gh(),
 // which passes real argv entries and never invokes a shell.
 const gh = (...args: string[]) => execFileSync("gh", args, { encoding: "utf8" });
+
+// The loop's own labels must exist on the tracker before it can move an issue
+// onto one. A label named in docs/agents/triage-labels.md is only a *mapping* —
+// nothing guarantees it was ever created on the tracker itself, and a missing
+// one turns a routine handoff into a fatal `gh` error mid-night. `gh label
+// create --force` is idempotent (creates if absent, updates if present), so
+// this is safe to run every launch. Called once at startup, before the loop.
+function ensureLabels() {
+  const specs: [string, string, string][] = [
+    [READY_LABEL, "0e8a16", "Fully specified, ready for an AFK agent"],
+    [TRIAGE_LABEL, "d93f0b", "An AFK agent gave up; a human needs to re-triage"],
+  ];
+  for (const [name, color, desc] of specs) {
+    try {
+      gh("label", "create", name, "--force", "--color", color, "--description", desc);
+    } catch (err) {
+      // Non-fatal: if we cannot even create labels, handleFailure below still
+      // swallows the resulting error rather than crashing the night.
+      console.error(`[ralph] could not ensure label "${name}" (non-fatal):`, err);
+    }
+  }
+}
 
 const MAIN_BRANCH = sh(`git branch --show-current`).trim();
 
@@ -292,9 +332,20 @@ function fileNightReport(landed: number, attempted: number) {
       "Per-stage logs: `.sandcastle/logs/`",
     ].join("\n"),
   );
-  sh(
-    `gh issue create --title "AFK night report: ${landed}/${attempted} landed" --body-file .sandcastle/logs/night-report.md`,
-  );
+  try {
+    // argv, not a shell string: the title is loop-controlled here, but keep the
+    // report filing on the same crash-proof footing as every other tracker call.
+    gh(
+      "issue", "create",
+      "--title", `AFK night report: ${landed}/${attempted} landed`,
+      "--body-file", ".sandcastle/logs/night-report.md",
+    );
+  } catch (err) {
+    // The report is the last thing the night does; losing it must not mask the
+    // fact that the merges themselves succeeded. The markdown survives on disk.
+    console.error("[ralph] could not file night report issue (non-fatal); see .sandcastle/logs/night-report.md:", err);
+  }
+  notify(`AFK night report — ${landed}/${attempted} landed on ${MAIN_BRANCH}. Details in the "AFK night report" issue.`);
 }
 
 // Never retry a failed issue tonight. First failure spawns a [continuation]
@@ -303,19 +354,33 @@ function fileNightReport(landed: number, attempted: number) {
 function handleFailure(issue: Issue) {
   const branch = `agent/issue-${issue.number}`;
   console.log(`[ralph] #${issue.number} did not land; handing off`);
-  gh("issue", "edit", String(issue.number), "--remove-label", READY_LABEL, "--add-label", "needs-triage");
+  // The failure path must never itself throw. It runs *after* an issue has
+  // already failed, and a `gh` hiccup here (a missing label, a rate limit, a
+  // transient network blip) would otherwise propagate out of the loop, crash
+  // the process, and take the remaining queue and the night report down with
+  // it — turning one stuck ticket into a lost night. Every tracker call below
+  // is therefore best-effort and independently guarded.
+  try {
+    gh("issue", "edit", String(issue.number), "--remove-label", READY_LABEL, "--add-label", TRIAGE_LABEL);
+  } catch (err) {
+    console.error(`[ralph] #${issue.number}: could not relabel for triage (non-fatal):`, err);
+  }
   if (issue.title.startsWith("[continuation]")) return;
-  gh(
-    "issue", "create",
-    "--title", `[continuation] ${issue.title}`, // untrusted text — argv only, never a shell string
-    "--label", READY_LABEL,
-    "--body",
-    [
-      "> *This was created by an AI agent working AFK.*",
-      "",
-      `Continuation of #${issue.number}. A prior AFK attempt left work on branch \`${branch}\` — read that issue, its comments, and the branch diff before starting. Finish the work until the full test suite is green, then emit the completion signal.`,
-    ].join("\n"),
-  );
+  try {
+    gh(
+      "issue", "create",
+      "--title", `[continuation] ${issue.title}`, // untrusted text — argv only, never a shell string
+      "--label", READY_LABEL,
+      "--body",
+      [
+        "> *This was created by an AI agent working AFK.*",
+        "",
+        `Continuation of #${issue.number}. A prior AFK attempt left work on branch \`${branch}\` — read that issue, its comments, and the branch diff before starting. Finish the work until the full test suite is green, then emit the completion signal.`,
+      ].join("\n"),
+    );
+  } catch (err) {
+    console.error(`[ralph] #${issue.number}: could not file continuation issue (non-fatal):`, err);
+  }
 }
 ```
 
@@ -324,8 +389,12 @@ function handleFailure(issue: Issue) {
 One pipeline at a time. The queue is re-queried every round, so continuation issues filed tonight get picked up tonight (budget permitting), and each merge is visible to the next issue's sandbox.
 
 ```ts
+ensureLabels(); // the queue/triage labels must exist before the loop can move issues onto them
+
 const attempted = new Set<number>();
 let landed = 0;
+
+notify(`AFK night shift started — ${readyIssues().length} ticket(s) in the queue, sequential. Watch: tail -f .sandcastle/logs/*.log · Stop: touch .sandcastle/STOP`);
 
 while (attempted.size < MAX_ISSUES_PER_NIGHT && keepGoing()) {
   const issue = readyIssues().find((i) => !attempted.has(i.number) && unblocked(i));
@@ -359,9 +428,13 @@ console.log(`[ralph] night shift over: ${landed} landed on main, ${attempted.siz
 Waves of concurrent pipelines, each on its own branch (mandatory — concurrent sandboxes sharing a branch corrupt each other). Implement-and-review runs concurrently; **merges happen after the wave, one at a time**. The queue is re-queried between waves, so continuations join later waves. Parallel branches merge against a main that moved beneath them, so conflicts are more likely — a conflicted merge falls through to `handleFailure`, and its continuation issue lands the rebase in a later session. Semantic drift (two green branches that merge cleanly but break each other) is caught by the `VERIFY_CMD` run on each merged tree before pushing, and by CI-on-main with auto-revert where CI exists.
 
 ```ts
+ensureLabels(); // the queue/triage labels must exist before the loop can move issues onto them
+
 const CONCURRENCY = 3;
 const attempted = new Set<number>();
 let landed = 0;
+
+notify(`AFK night shift started — ${readyIssues().length} ticket(s) in the queue, parallel×${CONCURRENCY}. Watch: tail -f .sandcastle/logs/*.log · Stop: touch .sandcastle/STOP`);
 
 while (attempted.size < MAX_ISSUES_PER_NIGHT && keepGoing()) {
   const wave = readyIssues()
